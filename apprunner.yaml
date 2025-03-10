@@ -6,7 +6,7 @@ build:
       - pip3 install -r requirements.txt
 run:
   runtime-version: 3.11
-  command: python3 -m uvicorn app.main:app
+  command: python3 app/main.py
   env:
     - name: AWS_REGION
       value: us-west-2
