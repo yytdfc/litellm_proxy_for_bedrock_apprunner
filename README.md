@@ -70,14 +70,24 @@ Note: The "bedrock/" prefix will be automatically added to the model name if not
 
 ## Using the Example Client
 
+Basic usage:
 ```
 python client_example.py
 ```
 
 For streaming:
-
 ```
 python client_example.py --stream
+```
+
+List available models:
+```
+python client_example.py --list-models
+```
+
+Use a specific model:
+```
+python client_example.py --model=anthropic.claude-3-haiku-20240307-v1:0
 ```
 
 ## Deployment to AWS App Runner
