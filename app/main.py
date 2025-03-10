@@ -20,8 +20,8 @@ app = FastAPI(
 )
 
 # Default AWS credentials from environment variables
-default_aws_key_id = os.getenv("AWS_ACCESS_KEY_ID")
-default_aws_secret = os.getenv("AWS_SECRET_ACCESS_KEY")
+default_aws_key_id = os.getenv("AWS_ACCESS_KEY_ID", None)
+default_aws_secret = os.getenv("AWS_SECRET_ACCESS_KEY", None)
 default_aws_region = os.getenv("AWS_REGION", "us-west-2")
 
 # Security scheme

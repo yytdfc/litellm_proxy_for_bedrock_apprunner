@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Update this to your deployed API URL
-API_URL = "http://localhost:8000"
+API_URL = "http://localhost:8080"
 
 # AWS credentials (from environment or hardcoded for testing)
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "your_access_key_id")
