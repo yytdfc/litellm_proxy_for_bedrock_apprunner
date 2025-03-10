@@ -27,12 +27,8 @@ default_aws_region = os.getenv("AWS_REGION", "us-west-2")
 # Security scheme
 security = HTTPBearer()
 
-# Model mapping from OpenAI format to Bedrock models
-MODEL_MAPPING = {
-    "gpt-3.5-turbo": "anthropic.claude-3-sonnet-20240229-v1:0", 
-    "gpt-4": "anthropic.claude-3-opus-20240229-v1:0",
-    # Add more mappings as needed
-}
+# Default model if none specified
+DEFAULT_MODEL = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
 
 def get_aws_credentials(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Extract AWS credentials from Authorization header"""

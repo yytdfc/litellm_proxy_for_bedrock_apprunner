@@ -23,7 +23,7 @@ def call_chat_api(messages, stream=False):
     }
     
     payload = {
-        "model": "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",  # Will be mapped to Claude Sonnet
+        "model": "bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
         "messages": messages,
         "temperature": 0.7,
         "stream": stream

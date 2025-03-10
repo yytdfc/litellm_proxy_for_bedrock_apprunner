@@ -54,7 +54,7 @@ POST /v1/chat/completions
 Example request:
 ```json
 {
-  "model": "gpt-3.5-turbo",
+  "model": "bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Hello, who are you?"}
@@ -97,6 +97,3 @@ python client_example.py --stream
 - `AWS_SECRET_ACCESS_KEY`: Your default AWS secret key
 - `AWS_REGION`: AWS region (default: us-west-2)
 
-## Adding More Models
-
-Edit the `MODEL_MAPPING` dictionary in `app/main.py` to add more model mappings.
