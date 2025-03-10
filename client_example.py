@@ -45,7 +45,7 @@ def call_chat_api(messages, stream=False, model=None):
     
     # Use the specified model or default to Claude 3.7 Sonnet
     if model is None:
-        model = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+        model = "us.amazon.nova-lite-v1:0"
     
     payload = {
         "model": model,  # "bedrock/" prefix will be added automatically

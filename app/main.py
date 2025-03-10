@@ -120,7 +120,7 @@ async def chat_completions(request: Request, credentials: dict = Depends(get_aws
 
         # Handle streaming responses
         if body.get("stream", False):
-            def generate_stream():
+            async def generate_stream():
                 try:
                     # Modify request for raw streaming with litellm
                     stream_options = body.copy()
@@ -130,9 +130,9 @@ async def chat_completions(request: Request, credentials: dict = Depends(get_aws
                         stream_options["complete_response"] = False
                     
                     # Forward request directly to LiteLLM with AWS credentials
-                    response = litellm.completion(**stream_options, **aws_config)
+                    response = await litellm.acompletion(**stream_options, **aws_config)
                     
-                    for chunk in response:
+                    async for chunk in response:
                         # Convert ModelResponse object to dict before JSON serialization
                         if hasattr(chunk, "model_dump"):
                             # For Pydantic v2 models
@@ -156,14 +156,11 @@ async def chat_completions(request: Request, credentials: dict = Depends(get_aws
             return StreamingResponse(
                 generate_stream(),
                 media_type="text/event-stream",
-                headers={
-                    "Content-Type": "text/event-stream",
-                }
             )
         # Non-streaming response
         
         # Handle regular responses - forward request directly
-        response = litellm.completion(**body, **aws_config)
+        response = await litellm.acompletion(**body, **aws_config)
         # Convert response to dict to ensure JSON serialization works
         if hasattr(response, "model_dump"):
             # For Pydantic v2 models
@@ -195,8 +192,9 @@ if __name__ == "__main__":
         host="0.0.0.0", 
         port=int(os.environ.get("PORT", "8080")),
         workers=workers,  # Multiple worker processes
-        # loop="uvloop",    # Faster event loop implementation
-        # http="httptools", # Faster HTTP protocol implementation
-        # limit_concurrency=1000,  # Increase concurrent connections limit
-        # backlog=2048      # Increase connection queue size
+        # loop="asyncio",    # Faster event loop for this task
+        loop="uvloop",    # Faster event loop implementation
+        http="httptools", # Faster HTTP protocol implementation
+        limit_concurrency=1024,  # Increase concurrent connections limit
+        backlog=2048      # Increase connection queue size
     )
