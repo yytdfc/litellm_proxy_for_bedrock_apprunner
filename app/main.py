@@ -60,10 +60,42 @@ async def root():
     return {"status": "healthy", "service": "litellm-proxy-for-bedrock"}
 
 @app.get("/v1/models")
-async def list_models():
-    """List available models in OpenAI format"""
-    # Just return a placeholder - actual models will be provided directly by client
-    return {"object": "list", "data": []}
+async def list_models(credentials: dict = Depends(get_aws_credentials)):
+    """List available models in OpenAI format by querying AWS Bedrock"""
+    import boto3
+    import time
+    
+    try:
+        # Create Bedrock client with provided credentials
+        bedrock_client = boto3.client(
+            'bedrock',
+            aws_access_key_id=credentials["aws_access_key_id"],
+            aws_secret_access_key=credentials["aws_secret_access_key"],
+            region_name=default_aws_region
+        )
+        
+        # Call AWS Bedrock API to list foundation models
+        response = bedrock_client.list_foundation_models()
+        
+        # Current timestamp for "created" field
+        current_timestamp = int(time.time())
+        
+        # Format response in OpenAI compatible format
+        models = []
+        for model in response.get("modelSummaries", []):
+            models.append({
+                "id": model.get("modelId"),
+                "object": "model",
+                "created": current_timestamp,
+                "owned_by": model.get("providerName", "unknown")
+            })
+        
+        return {"object": "list", "data": models}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": str(e), "type": type(e).__name__}}
+        )
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request, credentials: dict = Depends(get_aws_credentials), response: Response = None):

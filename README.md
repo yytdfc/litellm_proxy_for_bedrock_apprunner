@@ -46,6 +46,8 @@ If credentials are not provided in the header, the application will fall back to
 GET /v1/models
 ```
 
+Returns a list of all available models from AWS Bedrock in an OpenAI-compatible format. The response will include model IDs that can be used directly in your requests.
+
 ### Chat Completions
 ```
 POST /v1/chat/completions
