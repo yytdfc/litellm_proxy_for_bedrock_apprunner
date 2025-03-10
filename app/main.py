@@ -70,9 +70,14 @@ async def chat_completions(request: Request, credentials: dict = Depends(get_aws
     """Handle OpenAI-formatted chat completion requests"""
     try:
         body = await request.json()
-        # Removed debug print for performance
         
-        # No model mapping or checking - forward model ID directly
+        # Parse and prepare model name - add "bedrock/" prefix if missing
+        if "model" in body:
+            if not body["model"].startswith("bedrock/"):
+                body["model"] = f"bedrock/{body['model']}"
+        else:
+            # Use default model if none provided
+            body["model"] = f"bedrock/{DEFAULT_MODEL}"
         
         # Set AWS credentials for this request
         aws_config = {

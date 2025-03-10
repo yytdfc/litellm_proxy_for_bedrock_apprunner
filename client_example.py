@@ -23,7 +23,7 @@ def call_chat_api(messages, stream=False):
     }
     
     payload = {
-        "model": "bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "model": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",  # "bedrock/" prefix will be added automatically
         "messages": messages,
         "temperature": 0.7,
         "stream": stream

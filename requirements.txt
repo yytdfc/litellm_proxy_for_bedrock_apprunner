@@ -1,6 +1,6 @@
-fastapi==0.110.0
-uvicorn==0.30.1
-litellm==1.33.3
-boto3==1.34.149
-python-dotenv==1.0.1
-pydantic==2.6.4
+fastapi
+uvicorn
+litellm
+boto3
+python-dotenv
+pydantic
