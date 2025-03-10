@@ -183,19 +183,18 @@ async def chat_completions(request: Request, credentials: dict = Depends(get_aws
 
 if __name__ == "__main__":
     import uvicorn
-    # import multiprocessing
+    import multiprocessing
 
     # Calculate optimal workers based on CPU cores
-    # workers = multiprocessing.cpu_count() * 2 + 1
-    # print(workers)
+    workers = multiprocessing.cpu_count() * 2 + 1
+    print(workers)
     
     # Run with optimized settings for performance
-    print(help(uvicorn.run))
     uvicorn.run(
-        app, 
+        "app.main:app", 
         host="0.0.0.0", 
         port=int(os.environ.get("PORT", "8080")),
-        # workers=workers,  # Multiple worker processes
+        workers=workers,  # Multiple worker processes
         # loop="uvloop",    # Faster event loop implementation
         # http="httptools", # Faster HTTP protocol implementation
         # limit_concurrency=1000,  # Increase concurrent connections limit
