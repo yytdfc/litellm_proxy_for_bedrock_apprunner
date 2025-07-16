@@ -8,17 +8,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Update this to your deployed API URL
+# for apprunner: "https://xxxxxxxxxx.us-west-2.awsapprunner.com"
 API_URL = "http://localhost:8080"
 
 # AWS credentials (from environment or hardcoded for testing)
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "your_access_key_id")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "your_secret_key")
+API_KEY = os.getenv("API_KEY", "")
+print(API_KEY)
 
 def get_auth_headers():
     """Get authorization headers with AWS credentials"""
     return {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {AWS_ACCESS_KEY_ID}@{AWS_SECRET_ACCESS_KEY}"
+        "Authorization": f"Bearer {API_KEY}"
     }
 
 def list_models():
@@ -43,7 +44,7 @@ def call_chat_api(messages, stream=False, model=None):
     """Call the proxy API with OpenAI-format payload"""
     headers = get_auth_headers()
     
-    # Use the specified model or default to Claude 3.7 Sonnet
+    # Use the specified model or default to nova-lite-v1
     if model is None:
         model = "us.amazon.nova-lite-v1:0"
     
@@ -53,6 +54,7 @@ def call_chat_api(messages, stream=False, model=None):
         "temperature": 0.7,
         "stream": stream
     }
+    print(payload)
     
     if stream:
         response = requests.post(
@@ -94,7 +96,9 @@ if __name__ == "__main__":
     # Example messages
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Tell me a short story about a robot learning to cook."}
+        {"role": "user", 
+            "content": "Tell me a short story about a robot learning to cook."
+        }
     ]
     
     # Use stream mode if specified as command line arg
