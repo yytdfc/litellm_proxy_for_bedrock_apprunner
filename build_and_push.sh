@@ -37,13 +37,8 @@ docker push ${REPO_NAME}:${LITELLM_VERSION}
 docker tag ${ECR_NAMESPACE}:${LITELLM_VERSION} ${REPO_NAME}:latest
 docker push ${REPO_NAME}:latest
 
-
-aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws/y0a9p9k0
-docker tag ${ECR_NAMESPACE}:${LITELLM_VERSION} public.ecr.aws/y0a9p9k0/${ECR_NAMESPACE}:${LITELLM_VERSION}
-docker push public.ecr.aws/y0a9p9k0/${ECR_NAMESPACE}:${LITELLM_VERSION}
-docker tag ${ECR_NAMESPACE}:${LITELLM_VERSION} public.ecr.aws/y0a9p9k0/${ECR_NAMESPACE}:latest
-docker push public.ecr.aws/y0a9p9k0/${ECR_NAMESPACE}:latest
-
 echo Build and push completed
 echo Image URI: 
+
 echo ${REPO_NAME}:${LITELLM_VERSION}
+echo ${REPO_NAME}:latest

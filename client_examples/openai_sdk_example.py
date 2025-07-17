@@ -7,7 +7,6 @@ Prerequisites:
 """
 
 import os
-import sys
 import json
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -18,13 +17,6 @@ load_dotenv()
 # Get configuration from environment variables
 API_BASE = os.getenv("API_BASE")
 API_KEY= os.getenv("API_KEY", "")
-
-# If API_TOKEN is not set directly, construct it from AWS credentials
-if not API_KEY:
-    AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
-    AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-    if AWS_ACCESS_KEY and AWS_SECRET_KEY:
-        API_TOKEN = f"{AWS_ACCESS_KEY}@{AWS_SECRET_KEY}"
 
 # Initialize the OpenAI client with the custom API base
 client = OpenAI(

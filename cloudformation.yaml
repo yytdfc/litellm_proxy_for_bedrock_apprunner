@@ -31,7 +31,20 @@ Parameters:
       - 4 GB
       - 6 GB
       - 8 GB
-      - 12 GB
+      
+  AppRunnerMaxConcurrency:
+    Type: Number
+    Description: Maximum number of concurrent requests for App Runner service
+    Default: 100
+    MinValue: 1
+    MaxValue: 1000
+    
+  AppRunnerMaxSize:
+    Type: Number
+    Description: Maximum number of instances for App Runner service (Auto Scaling)
+    Default: 10
+    MinValue: 1
+    MaxValue: 128
 
 Conditions:
   # Condition to check if the ECR URI is for public ECR
@@ -40,28 +53,17 @@ Conditions:
     - "public"
 
 Resources:
-  # IAM User with Bedrock Access
-  BedrockUser:
-    Type: AWS::IAM::User
+  # Generate a random API key using Secrets Manager
+  APIKeySecret:
+    Type: AWS::SecretsManager::Secret
     Properties:
-      Policies:
-        - PolicyName: BedrockAccessPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - bedrock:InvokeModel
-                  - bedrock:InvokeModelWithResponseStream
-                  - bedrock:ListFoundationModels
-                  - bedrock:ListInferenceProfiles
-                Resource: '*'
-
-  # Access Key for the Bedrock User
-  BedrockUserAccessKey:
-    Type: AWS::IAM::AccessKey
-    Properties:
-      UserName: !Ref BedrockUser
+      Name: !Sub "${AWS::StackName}-api-key"
+      Description: "API Key for LiteLLM Proxy"
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: "apiKey"
+        PasswordLength: 64
+        ExcludePunctuation: true
 
   # App Runner Service Role
   AppRunnerServiceRole:
@@ -100,6 +102,10 @@ Resources:
                   - bedrock:ListFoundationModels
                   - bedrock:ListInferenceProfiles
                 Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref APIKeySecret
 
   # App Runner Service
   AppRunnerService:
@@ -120,18 +126,30 @@ Resources:
             RuntimeEnvironmentVariables:
               - Name: AWS_REGION
                 Value: !Ref AWSRegion
+              - Name: API_KEY
+                Value: !Join ['', ['{{resolve:secretsmanager:', !Ref APIKeySecret, ':SecretString:apiKey}}' ]]
+
       InstanceConfiguration:
         Cpu: !Ref AppRunnerCPU
         Memory: !Ref AppRunnerMemory
         InstanceRoleArn: !GetAtt AppRunnerInstanceRole.Arn
+        MaxConcurrency: !Ref AppRunnerMaxConcurrency
+      
+      AutoScalingConfigurationArn: !GetAtt AppRunnerAutoScalingConfig.AutoScalingConfigurationArn
+
+  # App Runner Auto Scaling Configuration
+  AppRunnerAutoScalingConfig:
+    Type: AWS::AppRunner::AutoScalingConfiguration
+    Properties:
+      AutoScalingConfigurationName: !Sub "${AWS::StackName}-auto-scaling"
+      MaxConcurrency: !Ref AppRunnerMaxConcurrency
+      MaxSize: !Ref AppRunnerMaxSize
+      MinSize: 1
 
 Outputs:
   APIKey:
-    Description: Bedrock credentials in the format accesskey@secretkey
-    Value: !Join 
-      - '@'
-      - - !Ref BedrockUserAccessKey
-        - !GetAtt BedrockUserAccessKey.SecretAccessKey
+    Description: API Key for authentication (retrieve from Secrets Manager)
+    Value: !Sub "https://console.aws.amazon.com/secretsmanager/home?region=${AWS::Region}#/secret?name=${APIKeySecret}"
         
   APIBaseURL:
     Description: API Base URL for OpenAI SDK invocation
