@@ -117,7 +117,7 @@ POST /v1/chat/completions
 Example request:
 ```json
 {
-  "model": "anthropic.claude-3-sonnet-20240229-v1:0",
+  "model": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Hello, who are you?"}
