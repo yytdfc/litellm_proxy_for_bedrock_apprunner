@@ -8,6 +8,7 @@ DOCKER_ARCH=${DOCKER_ARCH:-"linux/amd64"}
 
 ACCOUNT=${ACCOUNT:-$(aws sts get-caller-identity --query Account --output text)}
 REGION=${REGION:-$(aws configure get region)}
+REGION=${REGION:-$(aws ec2 describe-availability-zones --output text --query 'AvailabilityZones[0].RegionName')}
 
 # If the repository doesn't exist in ECR, create it.
 aws ecr describe-repositories --region ${REGION} --repository-names "${ECR_NAMESPACE}" > /dev/null 2>&1
