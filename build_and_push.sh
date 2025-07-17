@@ -19,7 +19,7 @@ fi
 
 # Log into Docker
 aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com
-REPO_NAME="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_NAMESPACE}:${LITELLM_VERSION}"
+REPO_NAME="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_NAMESPACE}"
 
 echo ${REPO_NAME}
 
@@ -32,5 +32,18 @@ docker build --platform $DOCKER_ARCH \
   -t ${ECR_NAMESPACE}\:${LITELLM_VERSION} .
 
 # Push it
-docker tag ${ECR_NAMESPACE}:${LITELLM_VERSION} ${REPO_NAME}
-docker push ${REPO_NAME}
+docker tag ${ECR_NAMESPACE}:${LITELLM_VERSION} ${REPO_NAME}:${LITELLM_VERSION}
+docker push ${REPO_NAME}:${LITELLM_VERSION}
+docker tag ${ECR_NAMESPACE}:${LITELLM_VERSION} ${REPO_NAME}:latest
+docker push ${REPO_NAME}:latest
+
+
+aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws/y0a9p9k0
+docker tag ${ECR_NAMESPACE}:${LITELLM_VERSION} public.ecr.aws/y0a9p9k0/${ECR_NAMESPACE}:${LITELLM_VERSION}
+docker push public.ecr.aws/y0a9p9k0/${ECR_NAMESPACE}:${LITELLM_VERSION}
+docker tag ${ECR_NAMESPACE}:${LITELLM_VERSION} public.ecr.aws/y0a9p9k0/${ECR_NAMESPACE}:latest
+docker push public.ecr.aws/y0a9p9k0/${ECR_NAMESPACE}:latest
+
+echo Build and push completed
+echo Image URI: 
+echo ${REPO_NAME}:${LITELLM_VERSION}

@@ -1,0 +1,154 @@
+{
+    "model": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+    "messages": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant.",
+            "cache_control": {"type": "ephemeral"}
+        },
+        {
+            "role": "user",
+            "content": "write a 1000 words story"
+        }
+    ],
+    "tools": [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Retrieves detailed weather information for a specified city, including current conditions, temperature, precipitation probability, wind speed, and humidity. The data is sourced from reliable weather services and updated in real-time.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                            "description": "Name of the city for weather lookup (e.g., 'New York', 'London', 'Tokyo')"
+                        },
+                        "country": {
+                            "type": "string",
+                            "description": "Optional: Two-letter ISO country code to disambiguate cities with the same name (e.g., 'US', 'GB', 'JP')"
+                        },
+                        "units": {
+                            "type": "string",
+                            "enum": ["celsius", "fahrenheit"],
+                            "description": "Temperature unit system to use in the response",
+                            "default": "celsius"
+                        },
+                        "forecast_days": {
+                            "type": "integer",
+                            "description": "Number of days to forecast (1-7 days)",
+                            "minimum": 1,
+                            "maximum": 7,
+                            "default": 1
+                        }
+                    },
+                    "required": ["city"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_restaurants",
+                "description": "Searches and provides detailed restaurant recommendations based on multiple criteria. Results include essential information such as ratings, popular dishes, operating hours, contact details, and recent reviews. The recommendations are personalized based on the specified preferences and real-time availability.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": "Specific location for restaurant search (e.g., 'Downtown Manhattan', 'West Hollywood')"
+                        },
+                        "cuisine": {
+                            "type": "string",
+                            "description": "Type of cuisine or food category (e.g., 'Italian', 'Vegan', 'Seafood', 'Farm-to-table')"
+                        },
+                        "price_range": {
+                            "type": "string",
+                            "enum": ["$", "$$", "$$$", "$$$$"],
+                            "description": "Price category: $ (under $15), $$ ($15-$30), $$$ ($31-$60), $$$$ (over $60 per person)"
+                        },
+                        "dietary_restrictions": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["vegetarian", "vegan", "gluten-free", "halal", "kosher", "dairy-free"]
+                            },
+                            "description": "List of dietary restrictions to filter restaurants"
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum number of restaurant recommendations to return",
+                            "minimum": 1,
+                            "maximum": 20,
+                            "default": 5
+                        },
+                        "sort_by": {
+                            "type": "string",
+                            "enum": ["rating", "price", "distance", "popularity"],
+                            "description": "Sorting criteria for the results",
+                            "default": "rating"
+                        }
+                    },
+                    "required": ["location"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_local_services",
+                "description": "Searches for and provides detailed information about local services and businesses, including operating hours, service ratings, pricing, and availability. Results include verified reviews, service area coverage, and booking capabilities where applicable.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": "Search area (city, neighborhood, or zip code)"
+                        },
+                        "service_type": {
+                            "type": "string",
+                            "enum": [
+                                "healthcare",
+                                "home_services",
+                                "professional_services",
+                                "beauty_and_wellness",
+                                "automotive",
+                                "education",
+                                "fitness",
+                                "pet_services"
+                            ],
+                            "description": "Category of service needed"
+                        },
+                        "radius": {
+                            "type": "number",
+                            "description": "Search radius in kilometers",
+                            "minimum": 0.5,
+                            "maximum": 50,
+                            "default": 5
+                        },
+                        "availability": {
+                            "type": "string",
+                            "description": "Optional: Desired appointment/service date and time in ISO 8601 format"
+                        },
+                        "rating_minimum": {
+                            "type": "number",
+                            "description": "Minimum rating threshold (1-5)",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "default": 4
+                        },
+                        "sort_criteria": {
+                            "type": "string",
+                            "enum": ["rating", "distance", "price", "availability"],
+                            "description": "How to sort the results",
+                            "default": "rating"
+                        }
+                    },
+                    "required": ["location", "service_type"]
+                }
+            }
+        }
+    ],
+    "temperature": 0.7,
+    "max_tokens": 500
+}

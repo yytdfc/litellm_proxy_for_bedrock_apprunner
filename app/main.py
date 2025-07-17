@@ -1,19 +1,21 @@
-from fastapi import FastAPI, Request, Response, HTTPException, Depends
+# Group standard library imports
+import json
+import logging
+import multiprocessing
+import os
+import random
+import time
 import uuid
+from typing import Dict, List, Any, Optional
+
+# Third-party imports
+import boto3
+import litellm
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request, Response, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.middleware.cors import CORSMiddleware
-import litellm
-import os
-import json
-import time
-import re
-import random
-import logging
-import base64
-import zlib
-from dotenv import load_dotenv
-from typing import Dict, List, Any, Optional
 
 
 litellm.drop_params = True # 👈 KEY CHANGE
@@ -45,31 +47,30 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# Default AWS credentials from environment variables
+# Configuration from environment variables
 default_aws_key_id = os.getenv("AWS_ACCESS_KEY_ID", None)
 default_aws_secret = os.getenv("AWS_SECRET_ACCESS_KEY", None)
 default_aws_region = os.getenv("AWS_REGION", "us-west-2")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "0"))  # 0 means auto-calculate
 
 # Security scheme
 security = HTTPBearer()
 
-# Default model if none specified
-DEFAULT_MODEL = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
-
 def parse_credential_pair(cred_pair: str) -> dict:
-    """Parse a single credential pair in format aws_access_key_id@aws_secret_access_key
-    The credential pair is expected to be zipped, base64 encoded"""
-    try:
+    """Parse a single credential pair in format aws_access_key_id@aws_secret_access_key"""
+    if '@' not in cred_pair:
+        return None
         
-        if '@' in cred_pair:
-            aws_access_key_id, aws_secret_access_key = cred_pair.split('@', 1)
-            return {
-                "aws_access_key_id": aws_access_key_id,
-                "aws_secret_access_key": aws_secret_access_key
-            }
+    try:
+        aws_access_key_id, aws_secret_access_key = cred_pair.split('@', 1)
+        return {
+            "aws_access_key_id": aws_access_key_id,
+            "aws_secret_access_key": aws_secret_access_key
+        }
     except Exception as e:
         logger.error(f"Error parsing credential pair: {str(e)}")
-    return None
+        return None
 
 def get_aws_credentials(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Extract AWS credentials from Authorization header"""
@@ -116,11 +117,18 @@ async def root():
     """Health check endpoint"""
     return {"status": "healthy"}
 
+def get_bedrock_client(credentials):
+    """Create a reusable boto3 client with connection pooling"""
+    return boto3.client(
+        'bedrock',
+        aws_access_key_id=credentials["aws_access_key_id"],
+        aws_secret_access_key=credentials["aws_secret_access_key"],
+        region_name=default_aws_region,
+    )
+
 @app.get("/v1/models")
 async def list_models(credentials: List[dict] = Depends(get_aws_credentials)):
     """List available models in OpenAI format by querying AWS Bedrock"""
-    import boto3
-    import time
     
     # Shuffle credentials to try them in random order
     random.shuffle(credentials)
@@ -133,29 +141,15 @@ async def list_models(credentials: List[dict] = Depends(get_aws_credentials)):
             logger.info(f"Listing models using AWS access key: {cred['aws_access_key_id']}")
             
             # Create Bedrock client with current credentials
-            bedrock_client = boto3.client(
-                'bedrock',
-                aws_access_key_id=cred["aws_access_key_id"],
-                aws_secret_access_key=cred["aws_secret_access_key"],
-                region_name=default_aws_region
-            )
+            bedrock_client = get_bedrock_client(cred)
             
             # Call AWS Bedrock API to list foundation models
             response = bedrock_client.list_foundation_models()
             
             # Format response in OpenAI compatible format
-            models = []
-            # for model in response.get("modelSummaries", []):
-            #     if "TEXT" not in model.get("outputModalities"):
-            #         continue
-            #     models.append({
-            #         "id": model.get("modelId"),
-            #         "object": "model",
-            #         "owned_by": model.get("providerName", "unknown")
-            #     })
-
             response = bedrock_client.list_inference_profiles()
             
+            models = []
             # Format response in OpenAI compatible format
             for model in response.get("inferenceProfileSummaries", []):
                 models.append({
@@ -165,6 +159,7 @@ async def list_models(credentials: List[dict] = Depends(get_aws_credentials)):
                 })
             
             logger.info(f"Successfully listed models with AWS access key: {cred['aws_access_key_id']}")
+            
             return {"object": "list", "data": models}
         except Exception as e:
             logger.error(f"Failed to list models with AWS access key: {cred['aws_access_key_id']}, error: {str(e)}")
@@ -179,34 +174,62 @@ async def list_models(credentials: List[dict] = Depends(get_aws_credentials)):
                           "type": type(last_exception).__name__ if last_exception else "Unknown"}}
     )
 
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id = str(uuid.uuid4())
+    logger.info(f"Request {request_id} started: {request.method} {request.url.path}")
+    start_time = time.time()
+    
+    response = await call_next(request)
+    
+    process_time = time.time() - start_time
+    logger.info(f"Request {request_id} completed in {process_time:.3f}s")
+    response.headers["X-Request-ID"] = request_id
+    
+    return response
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global exception handler caught: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"message": str(exc), "type": type(exc).__name__}}
+    )
+
+def process_tool_calls(messages):
+    """Extract tool handling to a separate function"""
+    tool_id = None
+    for i, msg in enumerate(messages):
+        if msg["role"] == "assistant" and "tool_calls" in msg:
+            if not msg["tool_calls"][0].get("id"):
+                msg["tool_calls"][0]["id"] = uuid.uuid4().hex
+            tool_id = msg["tool_calls"][0]["id"]
+        elif msg["role"] == "tool" and tool_id:
+            msg["tool_call_id"] = tool_id
+    return messages
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request, credentials_list: List[dict] = Depends(get_aws_credentials), response: Response = None):
     """Handle OpenAI-formatted chat completion requests"""
     try:
         body = await request.json()
-        try:
-            for i in range(len(body["messages"])):
-                if body["messages"][i]["role"] == "assistant":
-                    if "tool_calls" in body["messages"][i]:
-                        if body["messages"][i]["tool_calls"][0]["id"]:
-                            tool_id = body["messages"][i]["tool_calls"][0]["id"]
-                        else:
-                            body["messages"][i]["tool_calls"][0]["id"] = uuid.uuid4().hex
-                            tool_id = body["messages"][i]["tool_calls"][0]["id"]
-                elif body["messages"][i]["role"] == "tool":
-                    body["messages"][i]["tool_call_id"] = tool_id
-        except Exception as e:
-            pass
-
+        
+        # Process tool calls in messages
+        if "messages" in body:
+            body["messages"] = process_tool_calls(body["messages"])
+        
         # Parse and prepare model name - add "bedrock/" prefix if missing
         if "model" in body:
             if not body["model"].startswith("bedrock/"):
                 body["model"] = f"bedrock/converse/{body['model']}"
         else:
-            # Use default model if none provided
-            body["model"] = f"bedrock/converse/{DEFAULT_MODEL}"
+            # raise ValueError("No model specified in request")
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": "No model specified in request", "type": "ValueError"}}
+            )
+            
         
-        print(credentials_list)
         # Shuffle credentials to try them in random order
         random.shuffle(credentials_list)
         last_exception = None
@@ -220,13 +243,15 @@ async def chat_completions(request: Request, credentials_list: List[dict] = Depe
                 stream_options = body.copy()
                 
                 # Ensure we're getting raw stream chunks
-                if not "complete_response" in stream_options:
+                if "complete_response" not in stream_options:
                     stream_options["complete_response"] = False
                 
                 # Try each credential pair until one succeeds
                 for credentials in credentials_list:
                     try:
-                        logger.info(f"Making chat completion using AWS access key: {credentials['aws_access_key_id']} for model: {body['model']}")
+                        request_id = str(uuid.uuid4())
+                        logger.info(f"[{request_id}] Making streaming chat completion using AWS key: {credentials['aws_access_key_id'][:5]}... for model: {body['model']}")
+                        
                         # Set AWS credentials for this request
                         aws_config = {
                             "aws_access_key_id": credentials["aws_access_key_id"],
@@ -234,9 +259,12 @@ async def chat_completions(request: Request, credentials_list: List[dict] = Depe
                             "aws_region_name": default_aws_region
                         }
                         
+                        # Use async context manager for better resource management
+                        tool_id = ""
+                        start_time = time.time()
+                        
                         # Forward request directly to LiteLLM with AWS credentials
                         response = await litellm.acompletion(**stream_options, **aws_config)
-                        tool_id = ""
                         
                         async for chunk in response:
                             # Convert ModelResponse object to dict before JSON serialization
@@ -250,22 +278,27 @@ async def chat_completions(request: Request, credentials_list: List[dict] = Depe
                                 # Fallback - convert to dict directly
                                 chunk_dict = {k: v for k, v in chunk.__dict__.items() if not k.startswith('_')}
                             
+                            # Handle tool calls consistently
                             try:
-                                if chunk_dict["choices"][0]["delta"]["tool_calls"]:
-                                    if len(tool_id) == 0:
-                                        tool_id = chunk_dict["choices"][0]["delta"]["tool_calls"][0]["id"]
-                                    else:
-                                        chunk_dict["choices"][0]["delta"]["tool_calls"][0]["id"] = tool_id
-                            except Exception as e:
+                                if chunk_dict.get("choices", [{}])[0].get("delta", {}).get("tool_calls"):
+                                    if not tool_id:
+                                        tool_id = chunk_dict["choices"][0]["delta"]["tool_calls"][0].get("id", uuid.uuid4().hex)
+                                    chunk_dict["choices"][0]["delta"]["tool_calls"][0]["id"] = tool_id
+                            except (KeyError, IndexError):
                                 pass
+                                
                             # Format as proper SSE
                             chunk_str = json.dumps(chunk_dict)
-                            # print(chunk_str)
                             yield f"data: {chunk_str}\n\n"
+                        
+                        # Log successful completion
+                        process_time = time.time() - start_time
+                        logger.info(f"[{request_id}] Successfully streamed response in {process_time:.3f}s")
                         
                         yield "data: [DONE]\n\n"
                         return  # Successfully streamed response
                     except Exception as e:
+                        logger.error(f"Streaming failed with AWS key: {credentials['aws_access_key_id'][:5]}..., error: {str(e)}")
                         last_exception = e
                         continue  # Try next credential
                 
@@ -282,7 +315,8 @@ async def chat_completions(request: Request, credentials_list: List[dict] = Depe
         # Non-streaming response - try each credential until one works
         for credentials in credentials_list:
             try:
-                logger.info(f"Making chat completion using AWS access key: {credentials['aws_access_key_id']} for model: {body['model']}")
+                request_id = str(uuid.uuid4())
+                logger.info(f"[{request_id}] Making chat completion using AWS key: {credentials['aws_access_key_id'][:5]}... for model: {body['model']}")
                 
                 # Set AWS credentials for this request
                 aws_config = {
@@ -291,11 +325,14 @@ async def chat_completions(request: Request, credentials_list: List[dict] = Depe
                     "aws_region_name": default_aws_region
                 }
                 
+                start_time = time.time()
+                
                 # Handle regular responses - forward request directly
                 response = await litellm.acompletion(**body, **aws_config)
                 
-                # Log successful completion
-                logger.info(f"Successfully completed chat request with AWS access key: {credentials['aws_access_key_id']}")
+                # Log successful completion with timing
+                process_time = time.time() - start_time
+                logger.info(f"[{request_id}] Successfully completed chat request in {process_time:.3f}s")
                 
                 # Convert response to dict to ensure JSON serialization works
                 if hasattr(response, "model_dump"):
@@ -308,7 +345,7 @@ async def chat_completions(request: Request, credentials_list: List[dict] = Depe
                     # Fallback - convert to dict directly
                     return {k: v for k, v in response.__dict__.items() if not k.startswith('_')}
             except Exception as e:
-                logger.error(f"Failed chat completion with AWS access key: {credentials['aws_access_key_id']}, error: {str(e)}")
+                logger.error(f"Failed chat completion with AWS key: {credentials['aws_access_key_id'][:5]}..., error: {str(e)}")
                 last_exception = e
                 continue  # Try next credential
         
@@ -325,21 +362,34 @@ async def chat_completions(request: Request, credentials_list: List[dict] = Depe
             content={"error": {"message": str(e), "type": type(e).__name__}}
         )
 
+def calculate_workers():
+    """Calculate optimal number of workers based on environment or CPU count"""
+    if MAX_WORKERS > 0:
+        return MAX_WORKERS
+    
+    cpu_count = multiprocessing.cpu_count()
+    # For I/O-bound tasks (like API calls): cpu_count * 2 + 1
+    return cpu_count * 2 + 1
+
 if __name__ == "__main__":
     import uvicorn
-    import multiprocessing
+    import argparse
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="LiteLLM Proxy for Bedrock")
+    parser.add_argument("--port", type=int, default=8080, help="Port to run the server on (default: 8080)")
+    args = parser.parse_args()
 
-    # Calculate optimal workers based on CPU cores
-    workers = multiprocessing.cpu_count() * 2 + 1
-    print(workers)
+    # Calculate optimal workers
+    workers = calculate_workers()
+    print(f"Starting server with {workers} workers on port {args.port}")
     
     # Run with optimized settings for performance
     uvicorn.run(
         "main:app", 
         host="0.0.0.0", 
-        port=int(os.environ.get("PORT", "8080")),
+        port=int(os.environ.get("PORT", args.port)),
         workers=workers,  # Multiple worker processes
-        # loop="asyncio",    # Faster event loop for this task
         loop="uvloop",    # Faster event loop implementation
         http="httptools", # Faster HTTP protocol implementation
         limit_concurrency=1024,  # Increase concurrent connections limit

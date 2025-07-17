@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for deploying LiteLLM Proxy for Amazon Bedrock using App Runner with existing ECR image'
+
+Parameters:
+  ECRImageURI:
+    Type: String
+    Description: Full URI of the ECR image (including account ID, repository name, and tag)
+    Default: public.ecr.aws/y0a9p9k0/apprunner/litellm-proxy-for-bedrock:latest
+  
+  AWSRegion:
+    Type: String
+    Description: AWS Region for Bedrock
+    Default: us-west-2
+    
+  AppRunnerCPU:
+    Type: String
+    Description: CPU units for App Runner service
+    Default: 1 vCPU
+    AllowedValues:
+      - 1 vCPU
+      - 2 vCPU
+      - 4 vCPU
+  
+  AppRunnerMemory:
+    Type: String
+    Description: Memory for App Runner service
+    Default: 2 GB
+    AllowedValues:
+      - 2 GB
+      - 3 GB
+      - 4 GB
+      - 6 GB
+      - 8 GB
+      - 12 GB
+
+Conditions:
+  # Condition to check if the ECR URI is for public ECR
+  IsPublicECR: !Equals
+    - !Select [ "0", !Split [".", !Ref ECRImageURI]]
+    - "public"
+
+Resources:
+  # IAM User with Bedrock Access
+  BedrockUser:
+    Type: AWS::IAM::User
+    Properties:
+      Policies:
+        - PolicyName: BedrockAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:ListFoundationModels
+                  - bedrock:ListInferenceProfiles
+                Resource: '*'
+
+  # Access Key for the Bedrock User
+  BedrockUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref BedrockUser
+
+  # App Runner Service Role
+  AppRunnerServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: build.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+  # App Runner Instance Role
+  AppRunnerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: tasks.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AppRunnerInstanceRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:ListFoundationModels
+                  - bedrock:ListInferenceProfiles
+                Resource: '*'
+
+  # App Runner Service
+  AppRunnerService:
+    Type: AWS::AppRunner::Service
+    Properties:
+      ServiceName: !Sub ${AWS::StackName}-service
+      SourceConfiguration:
+        AuthenticationConfiguration: !If 
+          - IsPublicECR
+          - {}
+          - AccessRoleArn: !GetAtt AppRunnerServiceRole.Arn
+        AutoDeploymentsEnabled: false
+        ImageRepository:
+          ImageIdentifier: !Ref ECRImageURI
+          ImageRepositoryType: !If [IsPublicECR, "ECR_PUBLIC", "ECR"]
+          ImageConfiguration:
+            Port: 8080
+            RuntimeEnvironmentVariables:
+              - Name: AWS_REGION
+                Value: !Ref AWSRegion
+      InstanceConfiguration:
+        Cpu: !Ref AppRunnerCPU
+        Memory: !Ref AppRunnerMemory
+        InstanceRoleArn: !GetAtt AppRunnerInstanceRole.Arn
+
+Outputs:
+  APIKey:
+    Description: Bedrock credentials in the format accesskey@secretkey
+    Value: !Join 
+      - '@'
+      - - !Ref BedrockUserAccessKey
+        - !GetAtt BedrockUserAccessKey.SecretAccessKey
+        
+  APIBaseURL:
+    Description: API Base URL for OpenAI SDK invocation
+    Value: !Sub https://${AppRunnerService.ServiceUrl}/v1
