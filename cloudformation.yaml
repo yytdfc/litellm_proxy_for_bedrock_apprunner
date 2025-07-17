@@ -133,7 +133,6 @@ Resources:
         Cpu: !Ref AppRunnerCPU
         Memory: !Ref AppRunnerMemory
         InstanceRoleArn: !GetAtt AppRunnerInstanceRole.Arn
-        MaxConcurrency: !Ref AppRunnerMaxConcurrency
       
       AutoScalingConfigurationArn: !GetAtt AppRunnerAutoScalingConfig.AutoScalingConfigurationArn
 
