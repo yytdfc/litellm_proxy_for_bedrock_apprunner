@@ -79,9 +79,14 @@ After deployment completes:
    API_KEY=your-api-key-from-secrets-manager
    ```
 
-3. Run the test client:
+3. Install dependencies:
    ```bash
-   python openai_sdk_example.py
+   python3 -m pip install -r requirements.txt
+   ```
+
+4. Run the test client:
+   ```bash
+   python3 openai_sdk_example.py
    ```
 
 This will:
