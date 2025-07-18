@@ -30,11 +30,13 @@ For automated deployments, use the `-y` flag to skip confirmations:
 ./deploy-all-in-one.sh --yes
 ```
 
+To customize deployment settings, edit the `00.environment.sh` file before running the deployment script.
+
 ## Setup for Local Development
 
 1. Clone this repository:
    ```
-   git clone <repository-url>
+   git clone https://github.com/yytdfc/litellm_proxy_for_bedrock_apprunner.git
    cd litellm_proxy_for_bedrock_apprunner
    ```
 
@@ -79,6 +81,7 @@ For more control over the deployment process:
 
 ```bash
 # 1. Set up environment variables
+# Edit 00.environment.sh to customize deployment settings
 source ./00.environment.sh
 
 # 2. Build and push Docker image
