@@ -140,28 +140,11 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-def process_tool_calls(messages):
-    """Extract tool handling to a separate function"""
-    tool_id = None
-    for i, msg in enumerate(messages):
-        if msg["role"] == "assistant" and "tool_calls" in msg:
-            if not msg["tool_calls"][0].get("id"):
-                msg["tool_calls"][0]["id"] = uuid.uuid4().hex
-            tool_id = msg["tool_calls"][0]["id"]
-        elif msg["role"] == "tool" and tool_id:
-            msg["tool_call_id"] = tool_id
-    return messages
-
-
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request, authenticated: bool = Depends(verify_api_key), response: Response = None):
     """Handle OpenAI-formatted chat completion requests"""
     try:
         body = await request.json()
-        
-        # Process tool calls in messages
-        if "messages" in body:
-            body["messages"] = process_tool_calls(body["messages"])
         
         # Parse and prepare model name - add "bedrock/" prefix if missing
         if "model" in body:

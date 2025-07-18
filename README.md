@@ -11,95 +11,113 @@ A FastAPI server that provides an OpenAI-compatible API interface for Amazon Bed
 - Auto-scaling with AWS App Runner
 - CloudFormation deployment
 
-## Deployment to AWS
+## Quick Start: One-Step Deployment
 
-### 1. Build and Push Docker Image
-
-#### Option A: Build and push your own image (Recommended)
-
-Building your own Docker image gives you more control over the environment and allows you to make custom modifications:
+For the fastest deployment experience, use the all-in-one script:
 
 ```bash
-# Set environment variables (optional)
-export LITELLM_VERSION=litellm_stable_release_branch-v1.74.0-stable
-export ECR_NAMESPACE=apprunner/litellm-proxy-for-bedrock
-
-# Build and push to your private ECR
-./build_and_push.sh
+# Run the all-in-one deployment script
+./deploy-all-in-one.sh
 ```
 
-The script will:
-1. Create an ECR repository if it doesn't exist
-2. Build the Docker image
-3. Push the image to your ECR repository
-4. Output the full image URI for use in CloudFormation
+This script will:
+1. Set up environment variables
+2. Build and push a Docker image to ECR
+3. Deploy the application to AWS App Runner using CloudFormation
 
-#### Option B: Use the public ECR image
-
-Alternatively, you can use the pre-built public ECR image:
-```
-public.ecr.aws/y0a9p9k0/apprunner/litellm-proxy-for-bedrock:latest
+For automated deployments, use the `-y` flag to skip confirmations:
+```bash
+./deploy-all-in-one.sh --yes
 ```
 
-### 2. Deploy with CloudFormation
+## Setup for Local Development
 
-1. Navigate to AWS CloudFormation in the AWS Console
-2. Click "Create stack" > "With new resources (standard)"
-3. Upload the `cloudformation.yaml` file
-4. Fill in the parameters:
-   - **ECRImageURI**: Use your own ECR image URI (recommended) or the public ECR image
-   - **AWSRegion**: Region for Bedrock (default: us-west-2)
-   - **AppRunnerCPU**: CPU units (1-4 vCPU)
-   - **AppRunnerMemory**: Memory (2-8 GB)
-   - **AppRunnerMaxConcurrency**: Max concurrent requests per instance
-   - **AppRunnerMaxSize**: Maximum number of instances for auto-scaling
-5. Click "Next" through the wizard and "Create stack"
-6. Wait for the stack creation to complete (~5-10 minutes)
+1. Clone this repository:
+   ```
+   git clone <repository-url>
+   cd litellm_proxy_for_bedrock_apprunner
+   ```
 
-### 3. Get Deployment Information
+2. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+
+3. Configure environment variables:
+   ```
+   cp .env.example .env
+   ```
+   Edit the `.env` file to add your AWS credentials and API key.
+
+4. Run locally:
+   ```
+   uvicorn app.main:app --reload
+   ```
+   The API will be available at http://localhost:8000
+
+5. Test the local deployment:
+   ```
+   cd client_examples
+   cp .env_example .env
+   # Edit .env with your local settings
+   python openai_sdk_example.py
+   ```
+
+## Deployment Options
+
+### Option 1: One-Step Deployment (Recommended)
+
+```bash
+./deploy-all-in-one.sh
+# Or for automated deployments:
+./deploy-all-in-one.sh --yes
+```
+
+### Option 2: Step-by-Step Deployment
+
+For more control over the deployment process:
+
+```bash
+# 1. Set up environment variables
+source ./00.environment.sh
+
+# 2. Build and push Docker image
+./01.build_and_push.sh
+
+# 3. Deploy with CloudFormation
+./02.deploy.sh
+```
+
+Each script supports the `--yes` flag for automated deployments.
+
+### Option 3: Manual Deployment via AWS Console
+
+1. Build and push a Docker image or use the public one: `public.ecr.aws/y0a9p9k0/apprunner/litellm-proxy-for-bedrock:latest`
+2. Deploy using the AWS CloudFormation console with the `02.cloudformation.yaml` template
+
+## Testing Your Deployment
 
 After deployment completes:
 
-1. Go to the CloudFormation stack's "Outputs" tab
-2. Note the following values:
-   - **APIBaseURL**: The endpoint URL for your API
-   - **APIKey**: Link to retrieve your API key from Secrets Manager
-
-### 4. Test the Deployment
-
-1. Set up the client environment:
+1. Note the API endpoint URL and API key from the script output
+2. Configure the client:
    ```bash
    cd client_examples
    cp .env_example .env
+   # Edit .env with your deployment values
    ```
-
-2. Edit the `.env` file with your deployment values:
-   ```
-   API_BASE=https://your-app-runner-url.awsapprunner.com/v1
-   API_KEY=your-api-key-from-secrets-manager
-   ```
-
-3. Install dependencies:
+3. Run the test client:
    ```bash
-   python3 -m pip install -r requirements.txt
+   python openai_sdk_example.py
+   # or
+   python openai_http_example.py
    ```
-
-4. Run the test client:
-   ```bash
-   python3 openai_sdk_example.py
-   ```
-
-This will:
-- List available Bedrock models
-- Send a chat completion request
-- Test streaming capabilities
 
 ## API Usage
 
 ### Authentication
 
 Include your API key in all requests:
-
 ```
 Authorization: Bearer your_api_key
 ```
@@ -127,16 +145,11 @@ Example request:
 }
 ```
 
-## Environment Variables
-
-- `API_KEY`: API key for authentication
-- `AWS_REGION`: AWS region for Bedrock (default: us-west-2)
-
 ## Performance Tuning
 
-The CloudFormation template allows you to configure:
+Configure these parameters in the CloudFormation template:
 
-- **AppRunnerMaxConcurrency**: Controls how many concurrent requests each instance can handle
-- **AppRunnerMaxSize**: Controls the maximum number of instances for auto-scaling
+- **AppRunnerMaxConcurrency**: Concurrent requests per instance
+- **AppRunnerMaxSize**: Maximum number of instances for auto-scaling
 
 Adjust these values based on your expected traffic and performance requirements.
