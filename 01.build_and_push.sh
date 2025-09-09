@@ -20,7 +20,7 @@ done
 
 # Default values (can be overridden by environment variables)
 LITELLM_NAMESPACE=${LITELLM_NAMESPACE:-"ghcr.io/berriai/litellm"}
-LITELLM_VERSION=${LITELLM_VERSION:-"litellm_stable_release_branch-v1.74.0-stable"}
+LITELLM_VERSION=${LITELLM_VERSION:-"v1.75.8-stable"}
 ECR_NAMESPACE=${ECR_NAMESPACE:-"apprunner/litellm-proxy-for-bedrock"}
 DOCKER_ARCH=${DOCKER_ARCH:-"linux/amd64"}
 

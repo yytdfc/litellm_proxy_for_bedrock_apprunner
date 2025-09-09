@@ -136,7 +136,7 @@ def streaming_chat_completion_example():
                                             current_tool_call["arguments"] += tool_call['function']['arguments']
                             
                             # Handle usage info
-                            if 'usage' in chunk:
+                            if 'usage' in chunk and chunk["usage"]:
                                 print(f"\n\nUsage: {chunk['usage']}")
                         
                         except json.JSONDecodeError:

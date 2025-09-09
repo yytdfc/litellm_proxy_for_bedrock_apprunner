@@ -89,9 +89,20 @@ def get_bedrock_client():
 @app.get("/v1/models")
 async def list_models(authenticated: bool = Depends(verify_api_key)):
     """List available models in OpenAI format by querying AWS Bedrock"""
+    return await list_models_with_region(None, authenticated)
+
+@app.get("/{region}/v1/models")
+async def list_models_with_region(region: Optional[str], authenticated: bool = Depends(verify_api_key)):
+    """List available models in OpenAI format by querying AWS Bedrock with optional region"""
     
     try:
-        bedrock_client = get_bedrock_client()
+        # Use provided region or fall back to default
+        aws_region = region if region else default_aws_region
+        
+        bedrock_client = boto3.client(
+            'bedrock',
+            region_name=aws_region,
+        )
         
         # Call AWS Bedrock API to list foundation models
         response = bedrock_client.list_foundation_models()
@@ -108,11 +119,11 @@ async def list_models(authenticated: bool = Depends(verify_api_key)):
                 "owned_by": model.get("inferenceProfileId").split(".")[1]
             })
         
-        logger.info(f"Successfully listed models")
+        logger.info(f"Successfully listed models for region: {aws_region}")
         
         return {"object": "list", "data": models}
     except Exception as e:
-        logger.error(f"Failed to list models, error: {str(e)}")
+        logger.error(f"Failed to list models for region {aws_region if 'aws_region' in locals() else 'unknown'}, error: {str(e)}")
 
     
 
@@ -143,6 +154,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request, authenticated: bool = Depends(verify_api_key), response: Response = None):
     """Handle OpenAI-formatted chat completion requests"""
+    return await chat_completions_with_region(None, request, authenticated, response)
+
+@app.post("/{region}/v1/chat/completions")
+async def chat_completions_with_region(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key), response: Response = None):
+    """Handle OpenAI-formatted chat completion requests with optional region"""
     try:
         body = await request.json()
         
@@ -157,7 +173,10 @@ async def chat_completions(request: Request, authenticated: bool = Depends(verif
                 content={"error": {"message": "No model specified in request", "type": "ValueError"}}
             )
 
-        if "aws_region_name" not in body:
+        # Set AWS region from URL path or use default
+        if region:
+            body["aws_region_name"] = region
+        elif "aws_region_name" not in body:
             body["aws_region_name"] = default_aws_region
             
         # Handle streaming responses
