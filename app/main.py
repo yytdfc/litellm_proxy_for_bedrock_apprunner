@@ -86,6 +86,48 @@ def get_bedrock_client():
     )
 
 
+def add_cache_control_to_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add ephemeral cache control to the last message only for prompt caching"""
+    if not messages:
+        return messages
+    
+    # Copy all messages first
+    cached_messages = [message.copy() for message in messages]
+    
+    # Only add cache control to the last message
+    last_message = cached_messages[-1]
+    
+    # Add cache control to content if it's a string
+    if isinstance(last_message.get("content"), str):
+        last_message["cache_control"] = {"type": "ephemeral"}
+    
+    # Add cache control to content if it's a list of content items
+    elif isinstance(last_message.get("content"), list):
+        cached_content = []
+        for content_item in last_message["content"]:
+            if isinstance(content_item, dict):
+                cached_content_item = content_item.copy()
+                cached_content_item["cache_control"] = {"type": "ephemeral"}
+                cached_content.append(cached_content_item)
+            else:
+                cached_content.append(content_item)
+        last_message["content"] = cached_content
+    
+    # Add cache control to tool_calls if present
+    if "tool_calls" in last_message and isinstance(last_message["tool_calls"], list):
+        cached_tool_calls = []
+        for tool_call in last_message["tool_calls"]:
+            if isinstance(tool_call, dict):
+                cached_tool_call = tool_call.copy()
+                cached_tool_call["cache_control"] = {"type": "ephemeral"}
+                cached_tool_calls.append(cached_tool_call)
+            else:
+                cached_tool_calls.append(tool_call)
+        last_message["tool_calls"] = cached_tool_calls
+    
+    return cached_messages
+
+
 @app.get("/v1/models")
 async def list_models(authenticated: bool = Depends(verify_api_key)):
     """List available models in OpenAI format by querying AWS Bedrock"""
@@ -94,6 +136,15 @@ async def list_models(authenticated: bool = Depends(verify_api_key)):
 @app.get("/{region}/v1/models")
 async def list_models_with_region(region: Optional[str], authenticated: bool = Depends(verify_api_key)):
     """List available models in OpenAI format by querying AWS Bedrock with optional region"""
+    return await list_models_handler(region, authenticated)
+
+@app.get("/{region}/epc/v1/models")
+async def list_models_with_epc(region: Optional[str], authenticated: bool = Depends(verify_api_key)):
+    """List available models in OpenAI format by querying AWS Bedrock with EPC support"""
+    return await list_models_handler(region, authenticated)
+
+async def list_models_handler(region: Optional[str], authenticated: bool):
+    """Handle model listing requests with optional region"""
     
     try:
         # Use provided region or fall back to default
@@ -159,6 +210,15 @@ async def chat_completions(request: Request, authenticated: bool = Depends(verif
 @app.post("/{region}/v1/chat/completions")
 async def chat_completions_with_region(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key), response: Response = None):
     """Handle OpenAI-formatted chat completion requests with optional region"""
+    return await chat_completions_handler(region, False, request, authenticated, response)
+
+@app.post("/{region}/epc/v1/chat/completions")
+async def chat_completions_with_epc(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key), response: Response = None):
+    """Handle OpenAI-formatted chat completion requests with ephemeral prompt cache"""
+    return await chat_completions_handler(region, True, request, authenticated, response)
+
+async def chat_completions_handler(region: Optional[str], enable_cache: bool, request: Request, authenticated: bool, response: Response = None):
+    """Handle OpenAI-formatted chat completion requests with optional region and caching"""
     try:
         body = await request.json()
         
@@ -178,6 +238,11 @@ async def chat_completions_with_region(region: Optional[str], request: Request, 
             body["aws_region_name"] = region
         elif "aws_region_name" not in body:
             body["aws_region_name"] = default_aws_region
+        
+        # Add ephemeral prompt cache if EPC endpoint is used
+        if enable_cache and "messages" in body:
+            body["messages"] = add_cache_control_to_messages(body["messages"])
+            logger.info("Added ephemeral cache control to messages")
             
         # Handle streaming responses
         if body.get("stream", False):
