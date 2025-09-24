@@ -49,8 +49,9 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "0"))  # 0 means auto-calculate
 API_KEY = os.getenv("API_KEY", None)  # API key for authentication
 
-# Security scheme
+# Security schemes
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+x_api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
 
 async def verify_api_key(api_key: str = Security(api_key_header)):
@@ -65,6 +66,21 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
     # Remove 'Bearer ' prefix if present
     if api_key.startswith("Bearer "):
         api_key = api_key[7:]
+    
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    
+    return True
+
+
+async def verify_x_api_key(api_key: str = Security(x_api_key_header)):
+    """Verify the API key from the x-api-key header"""
+    if not API_KEY:
+        logger.warning("API_KEY environment variable not set")
+        raise HTTPException(status_code=500, detail="API key not configured on server")
+    
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key is required")
     
     if api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
@@ -155,13 +171,11 @@ async def list_models_handler(region: Optional[str], authenticated: bool):
             region_name=aws_region,
         )
         
-        # Call AWS Bedrock API to list foundation models
-        response = bedrock_client.list_foundation_models()
-        
+        models = []
+
         # Format response in OpenAI compatible format
         response = bedrock_client.list_inference_profiles()
         
-        models = []
         # Format response in OpenAI compatible format
         for model in response.get("inferenceProfileSummaries", []):
             models.append({
@@ -169,13 +183,24 @@ async def list_models_handler(region: Optional[str], authenticated: bool):
                 "object": "model",
                 "owned_by": model.get("inferenceProfileId").split(".")[1]
             })
-        
+
+        # Call AWS Bedrock API to list foundation models
+        response = bedrock_client.list_foundation_models()
+
+        # Format response in OpenAI compatible format
+        for model in response.get("modelSummaries", []):
+            if "TEXT" in model.get("outputModalities", ["TEXT"]):
+                models.append({
+                    "id": model.get("modelId"),
+                    "object": "model",
+                    "owned_by": model.get("providerName")
+                })
+
         logger.info(f"Successfully listed models for region: {aws_region}")
         
         return {"object": "list", "data": models}
     except Exception as e:
         logger.error(f"Failed to list models for region {aws_region if 'aws_region' in locals() else 'unknown'}, error: {str(e)}")
-
     
 
 @app.middleware("http")
@@ -340,6 +365,90 @@ async def chat_completions_handler(region: Optional[str], enable_cache: bool, re
                     content={"error": {"message": str(e), 
                                     "type": type(e).__name__ if e else "Unknown"}}
                 )
+    
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": str(e), "type": type(e).__name__}}
+        )
+
+
+@app.post("/v1/messages")
+async def messages(request: Request, authenticated: bool = Depends(verify_x_api_key), response: Response = None):
+    """Handle Anthropic-formatted messages requests"""
+    return await messages_with_region(None, request, authenticated, response)
+
+@app.post("/{region}/v1/messages")
+async def messages_with_region(region: Optional[str], request: Request, authenticated: bool = Depends(verify_x_api_key), response: Response = None):
+    """Handle Anthropic-formatted messages requests with optional region"""
+    return await messages_handler(region, False, request, authenticated, response)
+
+@app.post("/{region}/epc/v1/messages")
+async def messages_with_epc(region: Optional[str], request: Request, authenticated: bool = Depends(verify_x_api_key), response: Response = None):
+    """Handle Anthropic-formatted messages requests with ephemeral prompt cache"""
+    return await messages_handler(region, True, request, authenticated, response)
+
+async def messages_handler(region: Optional[str], enable_cache: bool, request: Request, authenticated: bool, response: Response = None):
+    """Handle Anthropic-formatted messages requests with optional region and caching"""
+    try:
+        body = await request.json()
+        
+        # Parse and prepare model name - add "bedrock/" prefix if missing
+        if "model" in body:
+            if not body["model"].startswith("bedrock/"):
+                body["model"] = f"bedrock/{body['model']}"
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": "No model specified in request", "type": "ValueError"}}
+            )
+
+        # Set AWS region from URL path or use default
+        if region:
+            body["aws_region_name"] = region
+        elif "aws_region_name" not in body:
+            body["aws_region_name"] = default_aws_region
+        
+        # Add ephemeral prompt cache if EPC endpoint is used
+        if enable_cache and "messages" in body:
+            body["messages"] = add_cache_control_to_messages(body["messages"])
+            logger.info("Added ephemeral cache control to messages")
+            
+        async def generate_stream():
+            
+            # Modify request for raw streaming with litellm
+            stream_options = body.copy()
+            
+            # Ensure we're getting raw stream chunks
+            if "complete_response" not in stream_options:
+                stream_options["complete_response"] = False
+            
+            try:
+                request_id = str(uuid.uuid4())
+                
+                start_time = time.time()
+                # Forward request directly to LiteLLM anthropic_messages with AWS config
+                response = await litellm.anthropic.messages.acreate(**{"no-log": True}, **stream_options, )
+                
+                async for chunk in response:
+                    yield chunk
+                
+                # Log successful completion
+                process_time = time.time() - start_time
+                logger.info(f"[{request_id}] Successfully streamed messages response in {process_time:.3f}s")
+                
+                return  # Successfully streamed response
+            except Exception as e:
+                logger.error(f"Messages streaming failed error: {str(e)}")
+            
+                error_data = {"error": {"message": str(e), 
+                                        "type": type(e).__name__ if e else "Unknown"}}
+                yield f"data: {json.dumps(error_data)}\n\n"
+        
+        return StreamingResponse(
+            generate_stream(),
+            media_type="text/event-stream",
+        )
     
     except Exception as e:
         return JSONResponse(
