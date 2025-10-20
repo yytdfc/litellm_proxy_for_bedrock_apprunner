@@ -268,6 +268,12 @@ async def chat_completions_handler(region: Optional[str], enable_cache: bool, re
         if enable_cache and "messages" in body:
             body["messages"] = add_cache_control_to_messages(body["messages"])
             logger.info("Added ephemeral cache control to messages")
+        
+        # For Anthropic models, remove top_p if both temperature and top_p are present
+        if "model" in body and "anthropic" in body["model"].lower():
+            if "temperature" in body and "top_p" in body:
+                logger.info(f"Removing top_p parameter for Anthropic model (keeping temperature)")
+                body.pop("top_p")
             
         # Handle streaming responses
         if body.get("stream", False):
