@@ -20,6 +20,23 @@ from fastapi.security import APIKeyHeader
 litellm.drop_params = True # 👈 KEY CHANGE
 litellm.modify_params=True
 
+# Model ID mapping: Claude API ID / alias -> AWS Bedrock ID
+MODEL_ID_MAPPING = {
+    # Claude Sonnet 4.5
+    "claude-sonnet-4-5-20250929": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-sonnet-4-5": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    # Claude Haiku 4.5
+    "claude-haiku-4-5-20251001": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Claude Opus 4.5
+    "claude-opus-4-5-20251101": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "claude-opus-4-5": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+}
+
+def convert_model_id(model_id: str) -> str:
+    """Convert Claude API model ID to AWS Bedrock model ID if mapping exists"""
+    return MODEL_ID_MAPPING.get(model_id, model_id)
+
 
 # Configuration from environment variables
 default_aws_region = os.getenv("AWS_REGION", "us-west-2")
@@ -244,8 +261,9 @@ async def chat_completions_handler(region: Optional[str], enable_cache: bool, re
     try:
         body = await request.json()
         
-        # Parse and prepare model name - add "bedrock/" prefix if missing
+        # Parse and prepare model name - convert Claude API ID to Bedrock ID, then add prefix
         if "model" in body:
+            body["model"] = convert_model_id(body["model"])
             if not body["model"].startswith("bedrock/"):
                 body["model"] = f"bedrock/converse/{body['model']}"
         else:
@@ -398,6 +416,8 @@ async def messages_handler(region: Optional[str], enable_cache: bool, request: R
                 content={"error": {"message": "No model specified in request", "type": "ValueError"}}
             )
 
+        # Convert Claude API ID to Bedrock ID
+        body["model"] = convert_model_id(body["model"])
         model_id = body["model"]
         aws_region = region if region else body.get("aws_region_name", default_aws_region)
         
@@ -459,9 +479,23 @@ async def messages_handler(region: Optional[str], enable_cache: bool, request: R
         )
 
 
+def remove_cache_control_ttl(obj):
+    """Recursively remove ttl from cache_control in nested structures"""
+    if isinstance(obj, dict):
+        if "cache_control" in obj and isinstance(obj["cache_control"], dict):
+            obj["cache_control"].pop("ttl", None)
+        for value in obj.values():
+            remove_cache_control_ttl(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            remove_cache_control_ttl(item)
+
+
 async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
     """Handle Claude models using AsyncAnthropicBedrock"""
     is_stream = body.pop("stream", False)
+    
+    remove_cache_control_ttl(body)
     
     client = get_anthropic_client(aws_region)
     request_id = str(uuid.uuid4())
