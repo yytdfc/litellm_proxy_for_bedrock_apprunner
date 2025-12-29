@@ -5,12 +5,13 @@ import multiprocessing
 import os
 import time
 import uuid
-from typing import Dict, List, Any, Optional
+from typing import List, Optional
 
 # Third-party imports
 import boto3
 import litellm
-from fastapi import FastAPI, Request, Response, Depends, HTTPException, Security
+from anthropic import AsyncAnthropicBedrock
+from fastapi import FastAPI, Request, Depends, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
@@ -20,9 +21,15 @@ litellm.drop_params = True # 👈 KEY CHANGE
 litellm.modify_params=True
 
 
+# Configuration from environment variables
+default_aws_region = os.getenv("AWS_REGION", "us-west-2")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "0"))
+API_KEY = os.getenv("API_KEY", None)
+
 # Set up logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("litellm-proxy")
@@ -53,56 +60,46 @@ API_KEY = os.getenv("API_KEY", None)  # API key for authentication
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 x_api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
+# Cache for AsyncAnthropicBedrock clients per region
+_anthropic_clients: dict[str, AsyncAnthropicBedrock] = {}
 
-async def verify_api_key(api_key: str = Security(api_key_header)):
-    """Verify the API key from the Authorization header"""
+def get_anthropic_client(aws_region: str) -> AsyncAnthropicBedrock:
+    if aws_region not in _anthropic_clients:
+        _anthropic_clients[aws_region] = AsyncAnthropicBedrock(aws_region=aws_region)
+    return _anthropic_clients[aws_region]
+
+
+async def verify_api_key_dual(
+    auth_header: str = Security(api_key_header),
+    x_api_key: str = Security(x_api_key_header)
+):
+    """Verify API key from either Authorization header (Bearer token) or x-api-key header"""
     if not API_KEY:
         logger.warning("API_KEY environment variable not set")
         raise HTTPException(status_code=500, detail="API key not configured on server")
     
-    if not api_key:
-        raise HTTPException(status_code=401, detail="API key is required")
-    
-    # Remove 'Bearer ' prefix if present
-    if api_key.startswith("Bearer "):
-        api_key = api_key[7:]
-    
-    if api_key != API_KEY:
+    # Try x-api-key first
+    if x_api_key:
+        if x_api_key == API_KEY:
+            return True
         raise HTTPException(status_code=403, detail="Invalid API key")
     
-    return True
-
-
-async def verify_x_api_key(api_key: str = Security(x_api_key_header)):
-    """Verify the API key from the x-api-key header"""
-    if not API_KEY:
-        logger.warning("API_KEY environment variable not set")
-        raise HTTPException(status_code=500, detail="API key not configured on server")
-    
-    if not api_key:
-        raise HTTPException(status_code=401, detail="API key is required")
-    
-    if api_key != API_KEY:
+    # Then try Authorization header
+    if auth_header:
+        api_key = auth_header[7:] if auth_header.startswith("Bearer ") else auth_header
+        if api_key == API_KEY:
+            return True
         raise HTTPException(status_code=403, detail="Invalid API key")
     
-    return True
+    raise HTTPException(status_code=401, detail="API key is required")
 
 
 @app.get("/")
 async def root():
-    """Health check endpoint"""
     return {"status": "healthy"}
 
 
-def get_bedrock_client():
-    """Create a reusable boto3 client with connection pooling"""
-    return boto3.client(
-        'bedrock',
-        region_name=default_aws_region,
-    )
-
-
-def add_cache_control_to_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def add_cache_control_to_messages(messages: List[dict]) -> List[dict]:
     """Add ephemeral cache control to the last message only for prompt caching"""
     if not messages:
         return messages
@@ -145,17 +142,17 @@ def add_cache_control_to_messages(messages: List[Dict[str, Any]]) -> List[Dict[s
 
 
 @app.get("/v1/models")
-async def list_models(authenticated: bool = Depends(verify_api_key)):
+async def list_models(authenticated: bool = Depends(verify_api_key_dual)):
     """List available models in OpenAI format by querying AWS Bedrock"""
     return await list_models_with_region(None, authenticated)
 
 @app.get("/{region}/v1/models")
-async def list_models_with_region(region: Optional[str], authenticated: bool = Depends(verify_api_key)):
+async def list_models_with_region(region: Optional[str], authenticated: bool = Depends(verify_api_key_dual)):
     """List available models in OpenAI format by querying AWS Bedrock with optional region"""
     return await list_models_handler(region, authenticated)
 
 @app.get("/{region}/epc/v1/models")
-async def list_models_with_epc(region: Optional[str], authenticated: bool = Depends(verify_api_key)):
+async def list_models_with_epc(region: Optional[str], authenticated: bool = Depends(verify_api_key_dual)):
     """List available models in OpenAI format by querying AWS Bedrock with EPC support"""
     return await list_models_handler(region, authenticated)
 
@@ -201,6 +198,10 @@ async def list_models_handler(region: Optional[str], authenticated: bool):
         return {"object": "list", "data": models}
     except Exception as e:
         logger.error(f"Failed to list models for region {aws_region if 'aws_region' in locals() else 'unknown'}, error: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": str(e), "type": type(e).__name__}}
+        )
     
 
 @app.middleware("http")
@@ -228,22 +229,18 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: Request, authenticated: bool = Depends(verify_api_key), response: Response = None):
-    """Handle OpenAI-formatted chat completion requests"""
-    return await chat_completions_with_region(None, request, authenticated, response)
+async def chat_completions(request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    return await chat_completions_with_region(None, request, authenticated)
 
 @app.post("/{region}/v1/chat/completions")
-async def chat_completions_with_region(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key), response: Response = None):
-    """Handle OpenAI-formatted chat completion requests with optional region"""
-    return await chat_completions_handler(region, False, request, authenticated, response)
+async def chat_completions_with_region(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    return await chat_completions_handler(region, False, request, authenticated)
 
 @app.post("/{region}/epc/v1/chat/completions")
-async def chat_completions_with_epc(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key), response: Response = None):
-    """Handle OpenAI-formatted chat completion requests with ephemeral prompt cache"""
-    return await chat_completions_handler(region, True, request, authenticated, response)
+async def chat_completions_with_epc(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    return await chat_completions_handler(region, True, request, authenticated)
 
-async def chat_completions_handler(region: Optional[str], enable_cache: bool, request: Request, authenticated: bool, response: Response = None):
-    """Handle OpenAI-formatted chat completion requests with optional region and caching"""
+async def chat_completions_handler(region: Optional[str], enable_cache: bool, request: Request, authenticated: bool):
     try:
         body = await request.json()
         
@@ -380,87 +377,123 @@ async def chat_completions_handler(region: Optional[str], enable_cache: bool, re
 
 
 @app.post("/v1/messages")
-async def messages(request: Request, authenticated: bool = Depends(verify_x_api_key), response: Response = None):
-    """Handle Anthropic-formatted messages requests"""
-    return await messages_with_region(None, request, authenticated, response)
+async def messages(request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    return await messages_with_region(None, request, authenticated)
 
 @app.post("/{region}/v1/messages")
-async def messages_with_region(region: Optional[str], request: Request, authenticated: bool = Depends(verify_x_api_key), response: Response = None):
-    """Handle Anthropic-formatted messages requests with optional region"""
-    return await messages_handler(region, False, request, authenticated, response)
+async def messages_with_region(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    return await messages_handler(region, False, request, authenticated)
 
 @app.post("/{region}/epc/v1/messages")
-async def messages_with_epc(region: Optional[str], request: Request, authenticated: bool = Depends(verify_x_api_key), response: Response = None):
-    """Handle Anthropic-formatted messages requests with ephemeral prompt cache"""
-    return await messages_handler(region, True, request, authenticated, response)
+async def messages_with_epc(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    return await messages_handler(region, True, request, authenticated)
 
-async def messages_handler(region: Optional[str], enable_cache: bool, request: Request, authenticated: bool, response: Response = None):
-    """Handle Anthropic-formatted messages requests with optional region and caching"""
+async def messages_handler(region: Optional[str], enable_cache: bool, request: Request, authenticated: bool):
     try:
         body = await request.json()
         
-        # Parse and prepare model name - add "bedrock/" prefix if missing
-        if "model" in body:
-            if not body["model"].startswith("bedrock/"):
-                body["model"] = f"bedrock/{body['model']}"
-        else:
+        if "model" not in body:
             return JSONResponse(
                 status_code=400,
                 content={"error": {"message": "No model specified in request", "type": "ValueError"}}
             )
 
-        # Set AWS region from URL path or use default
-        if region:
-            body["aws_region_name"] = region
-        elif "aws_region_name" not in body:
-            body["aws_region_name"] = default_aws_region
+        model_id = body["model"]
+        aws_region = region if region else body.get("aws_region_name", default_aws_region)
         
         # Add ephemeral prompt cache if EPC endpoint is used
         if enable_cache and "messages" in body:
             body["messages"] = add_cache_control_to_messages(body["messages"])
             logger.info("Added ephemeral cache control to messages")
+
+        # For Claude models, use native Bedrock invoke API
+        if "claude" in model_id.lower():
+            return await _handle_claude_native(model_id, aws_region, body)
+        
+        # For non-Claude models, use LiteLLM
+        if not model_id.startswith("bedrock/"):
+            body["model"] = f"bedrock/{model_id}"
+        body["aws_region_name"] = aws_region
+
+        if body.get("stream", False):
+            async def generate_stream():
+                stream_options = body.copy()
+                if "complete_response" not in stream_options:
+                    stream_options["complete_response"] = False
+                
+                try:
+                    request_id = str(uuid.uuid4())
+                    start_time = time.time()
+                    response = await litellm.anthropic.messages.acreate(**{"no-log": True}, **stream_options)
+                    
+                    async for chunk in response:
+                        yield chunk
+                    
+                    process_time = time.time() - start_time
+                    logger.info(f"[{request_id}] Successfully streamed messages response in {process_time:.3f}s")
+                except Exception as e:
+                    logger.error(f"Messages streaming failed error: {str(e)}")
+                    error_data = {"error": {"message": str(e), "type": type(e).__name__ if e else "Unknown"}}
+                    yield f"data: {json.dumps(error_data)}\n\n"
             
-        async def generate_stream():
-            
-            # Modify request for raw streaming with litellm
-            stream_options = body.copy()
-            
-            # Ensure we're getting raw stream chunks
-            if "complete_response" not in stream_options:
-                stream_options["complete_response"] = False
-            
+            return StreamingResponse(generate_stream(), media_type="text/event-stream")
+        else:
             try:
                 request_id = str(uuid.uuid4())
-                
                 start_time = time.time()
-                # Forward request directly to LiteLLM anthropic_messages with AWS config
-                response = await litellm.anthropic.messages.acreate(**{"no-log": True}, **stream_options, )
-                
-                async for chunk in response:
-                    yield chunk
-                
-                # Log successful completion
+                response = await litellm.anthropic.messages.acreate(**{"no-log": True}, **body)
                 process_time = time.time() - start_time
-                logger.info(f"[{request_id}] Successfully streamed messages response in {process_time:.3f}s")
-                
-                return  # Successfully streamed response
+                logger.info(f"[{request_id}] Successfully completed messages request in {process_time:.3f}s")
+                return response
             except Exception as e:
-                logger.error(f"Messages streaming failed error: {str(e)}")
-            
-                error_data = {"error": {"message": str(e), 
-                                        "type": type(e).__name__ if e else "Unknown"}}
-                yield f"data: {json.dumps(error_data)}\n\n"
-        
-        return StreamingResponse(
-            generate_stream(),
-            media_type="text/event-stream",
-        )
+                logger.error(f"Messages request failed error: {str(e)}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": {"message": str(e), "type": type(e).__name__ if e else "Unknown"}}
+                )
     
     except Exception as e:
         return JSONResponse(
             status_code=500,
             content={"error": {"message": str(e), "type": type(e).__name__}}
         )
+
+
+async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
+    """Handle Claude models using AsyncAnthropicBedrock"""
+    is_stream = body.pop("stream", False)
+    
+    client = get_anthropic_client(aws_region)
+    request_id = str(uuid.uuid4())
+    start_time = time.time()
+
+    if is_stream:
+        async def generate_stream():
+            try:
+                stream = await client.messages.create(stream=True, **body)
+                async for event in stream:
+                    yield f"event: {event.type}\ndata: {json.dumps(event.model_dump() if hasattr(event, 'model_dump') else event.dict())}\n\n"
+                
+                process_time = time.time() - start_time
+                logger.info(f"[{request_id}] Successfully streamed Claude native response in {process_time:.3f}s")
+            except Exception as e:
+                logger.error(f"Claude native streaming failed: {str(e)}")
+                error_data = {"type": "error", "error": {"message": str(e), "type": type(e).__name__}}
+                yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+        
+        return StreamingResponse(generate_stream(), media_type="text/event-stream")
+    else:
+        try:
+            response = await client.messages.create(**body, timeout=1200)
+            process_time = time.time() - start_time
+            logger.info(f"[{request_id}] Successfully completed Claude native request in {process_time:.3f}s")
+            return response.model_dump() if hasattr(response, 'model_dump') else response.dict()
+        except Exception as e:
+            logger.error(f"Claude native request failed: {str(e)}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": {"message": str(e), "type": type(e).__name__}}
+            )
 
 
 def calculate_workers():
