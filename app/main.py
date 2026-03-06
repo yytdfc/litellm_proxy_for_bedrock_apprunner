@@ -1,8 +1,10 @@
 # Group standard library imports
+import hashlib
 import json
 import logging
 import multiprocessing
 import os
+import random
 import time
 import uuid
 from typing import List, Optional
@@ -10,6 +12,7 @@ from typing import List, Optional
 # Third-party imports
 import boto3
 import litellm
+import redis
 from anthropic import AsyncAnthropicBedrock
 from fastapi import FastAPI, Request, Depends, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +22,76 @@ from fastapi.security import APIKeyHeader
 
 litellm.drop_params = True # 👈 KEY CHANGE
 litellm.modify_params=True
+
+# Cross-region load balancing config
+CROSS_REGION_POOLS = [
+    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+    "eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1",
+    "ap-northeast-1", "ap-northeast-2", "ap-south-1",
+    "ap-southeast-1", "ap-southeast-2", "sa-east-1"
+]
+CROSS_REGION_TTL = 3600  # 1 hour
+REGION_BLACKLIST_TTL = 300  # 5 minutes
+
+# Redis client for cross-region cache
+_redis = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
+
+
+def _strip_cache_control(obj):
+    """Recursively remove cache_control fields for hash computation"""
+    if isinstance(obj, dict):
+        return {k: _strip_cache_control(v) for k, v in obj.items() if k != "cache_control"}
+    elif isinstance(obj, list):
+        return [_strip_cache_control(i) for i in obj]
+    return obj
+
+
+def _compute_request_hash(body: dict) -> str:
+    """Compute hash from tools + system + first 3 messages (without cache fields)"""
+    parts = []
+    if "tools" in body:
+        parts.append(json.dumps(_strip_cache_control(body["tools"]), sort_keys=True))
+    if "system" in body:
+        parts.append(json.dumps(_strip_cache_control(body["system"]), sort_keys=True))
+    if "messages" in body:
+        parts.append(json.dumps(_strip_cache_control(body["messages"][:3]), sort_keys=True))
+    return hashlib.md5("".join(parts).encode()).hexdigest()
+
+
+def _is_region_blacklisted(region: str) -> bool:
+    return _redis.exists(f"blacklist:{region}") > 0
+
+
+def _blacklist_region(region: str):
+    _redis.setex(f"blacklist:{region}", REGION_BLACKLIST_TTL, "1")
+    logger.warning(f"Region {region} blacklisted for {REGION_BLACKLIST_TTL}s")
+
+
+def _get_cross_region(body: dict) -> str:
+    """Get region for cross-region load balancing with Redis TTL cache"""
+    h = f"cross:{_compute_request_hash(body)}"
+    
+    # Check cache, refresh TTL if hit and region is healthy
+    if region := _redis.get(h):
+        if not _is_region_blacklisted(region):
+            _redis.expire(h, CROSS_REGION_TTL)
+            return region
+        # Cached region is blacklisted, clear and re-select
+        _redis.delete(h)
+    
+    # Select region based on hash, skip blacklisted
+    hash_int = int(h.split(":")[1], 16)
+    for i in range(len(CROSS_REGION_POOLS)):
+        candidate = CROSS_REGION_POOLS[(hash_int + i) % len(CROSS_REGION_POOLS)]
+        if not _is_region_blacklisted(candidate):
+            _redis.setex(h, CROSS_REGION_TTL, candidate)
+            return candidate
+    
+    # All blacklisted, fallback to hash-based pick
+    region = CROSS_REGION_POOLS[hash_int % len(CROSS_REGION_POOLS)]
+    _redis.setex(h, CROSS_REGION_TTL, region)
+    return region
+
 
 # Model ID mapping: Claude API ID / alias -> AWS Bedrock ID
 MODEL_ID_MAPPING = {
@@ -31,6 +104,12 @@ MODEL_ID_MAPPING = {
     # Claude Opus 4.5
     "claude-opus-4-5-20251101": "global.anthropic.claude-opus-4-5-20251101-v1:0",
     "claude-opus-4-5": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    # Claude Opus 4.6
+    "claude-opus-4-6": "global.anthropic.claude-opus-4-6-v1",
+    "claude-opus-4-6[1m]": "global.anthropic.claude-opus-4-6-v1",
+    # Claude Sonnet 4.6
+    "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
+    "claude-sonnet-4-6[1m]": "global.anthropic.claude-sonnet-4-6",
 }
 
 def convert_model_id(model_id: str) -> str:
@@ -249,6 +328,23 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def chat_completions(request: Request, authenticated: bool = Depends(verify_api_key_dual)):
     return await chat_completions_with_region(None, request, authenticated)
 
+@app.post("/cross/v1/chat/completions")
+async def chat_completions_cross(request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    body = await request.json()
+    model = convert_model_id(body.get("model", ""))
+    if not model.startswith("global."):
+        return await chat_completions_handler(default_aws_region, False, request, authenticated, body)
+    region = _get_cross_region(body)
+    logger.info(f"Cross-region routing to: {region}")
+    try:
+        return await chat_completions_handler(region, False, request, authenticated, body)
+    except Exception as e:
+        logger.error(f"Cross-region {region} failed: {e}, retrying with fallback")
+        _blacklist_region(region)
+        fallback = _get_cross_region(body)
+        logger.info(f"Cross-region fallback to: {fallback}")
+        return await chat_completions_handler(fallback, False, request, authenticated, body)
+
 @app.post("/{region}/v1/chat/completions")
 async def chat_completions_with_region(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key_dual)):
     return await chat_completions_handler(region, False, request, authenticated)
@@ -257,9 +353,10 @@ async def chat_completions_with_region(region: Optional[str], request: Request, 
 async def chat_completions_with_epc(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key_dual)):
     return await chat_completions_handler(region, True, request, authenticated)
 
-async def chat_completions_handler(region: Optional[str], enable_cache: bool, request: Request, authenticated: bool):
+async def chat_completions_handler(region: Optional[str], enable_cache: bool, request: Request, authenticated: bool, body: dict = None):
     try:
-        body = await request.json()
+        if body is None:
+            body = await request.json()
         
         # Parse and prepare model name - convert Claude API ID to Bedrock ID, then add prefix
         if "model" in body:
@@ -398,6 +495,23 @@ async def chat_completions_handler(region: Optional[str], enable_cache: bool, re
 async def messages(request: Request, authenticated: bool = Depends(verify_api_key_dual)):
     return await messages_with_region(None, request, authenticated)
 
+@app.post("/cross/v1/messages")
+async def messages_cross(request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    body = await request.json()
+    model = convert_model_id(body.get("model", ""))
+    if not model.startswith("global."):
+        return await messages_handler(default_aws_region, False, request, authenticated, body)
+    region = _get_cross_region(body)
+    logger.info(f"Cross-region routing to: {region}")
+    try:
+        return await messages_handler(region, False, request, authenticated, body)
+    except Exception as e:
+        logger.error(f"Cross-region {region} failed: {e}, retrying with fallback")
+        _blacklist_region(region)
+        fallback = _get_cross_region(body)
+        logger.info(f"Cross-region fallback to: {fallback}")
+        return await messages_handler(fallback, False, request, authenticated, body)
+
 @app.post("/{region}/v1/messages")
 async def messages_with_region(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key_dual)):
     return await messages_handler(region, False, request, authenticated)
@@ -406,9 +520,10 @@ async def messages_with_region(region: Optional[str], request: Request, authenti
 async def messages_with_epc(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key_dual)):
     return await messages_handler(region, True, request, authenticated)
 
-async def messages_handler(region: Optional[str], enable_cache: bool, request: Request, authenticated: bool):
+async def messages_handler(region: Optional[str], enable_cache: bool, request: Request, authenticated: bool, body: dict = None):
     try:
-        body = await request.json()
+        if body is None:
+            body = await request.json()
         
         if "model" not in body:
             return JSONResponse(
@@ -493,18 +608,35 @@ def remove_cache_control_ttl(obj):
 
 async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
     """Handle Claude models using AsyncAnthropicBedrock"""
+    request_id = str(uuid.uuid4())
+
     is_stream = body.pop("stream", False)
     
     remove_cache_control_ttl(body)
     
+    # Strip known non-API fields that SDK doesn't accept
+    for key in ["callOptions", "output_config", "headers"]:
+        body.pop(key, None)
+    
+    # Add beta headers for opus-4.5, sonnet-4.6, opus-4.6
+    extra_headers = {}
+    is_46 = "opus-4-6" in model_id or "opus-4.6" in model_id or "sonnet-4-6" in model_id or "sonnet-4.6" in model_id
+    is_opus_45 = "opus-4-5" in model_id or "opus-4.5" in model_id
+    if is_46 or is_opus_45:
+        betas = ["tool-search-tool-2025-10-19"]
+        if is_46:
+            betas.append("context-1m-2025-08-07")
+        extra_headers["anthropic-beta"] = ",".join(betas)
+    
     client = get_anthropic_client(aws_region)
-    request_id = str(uuid.uuid4())
     start_time = time.time()
+
+    logger.info(f"[{request_id}] claude_native model={model_id} region={aws_region} stream={is_stream}")
 
     if is_stream:
         async def generate_stream():
             try:
-                stream = await client.messages.create(stream=True, **body)
+                stream = await client.messages.create(stream=True, extra_headers=extra_headers, **body)
                 async for event in stream:
                     yield f"event: {event.type}\ndata: {json.dumps(event.model_dump() if hasattr(event, 'model_dump') else event.dict())}\n\n"
                 
@@ -518,7 +650,7 @@ async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
         return StreamingResponse(generate_stream(), media_type="text/event-stream")
     else:
         try:
-            response = await client.messages.create(**body, timeout=1200)
+            response = await client.messages.create(**body, extra_headers=extra_headers, timeout=1200)
             process_time = time.time() - start_time
             logger.info(f"[{request_id}] Successfully completed Claude native request in {process_time:.3f}s")
             return response.model_dump() if hasattr(response, 'model_dump') else response.dict()
@@ -534,10 +666,7 @@ def calculate_workers():
     """Calculate optimal number of workers based on environment or CPU count"""
     if MAX_WORKERS > 0:
         return MAX_WORKERS
-    
-    cpu_count = multiprocessing.cpu_count()
-    # For I/O-bound tasks (like API calls): cpu_count * 2 + 1
-    return cpu_count * 2 + 1
+    return multiprocessing.cpu_count()
 
 
 if __name__ == "__main__":
