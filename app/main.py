@@ -491,6 +491,50 @@ async def chat_completions_handler(region: Optional[str], enable_cache: bool, re
         )
 
 
+@app.post("/v1/embeddings")
+async def embeddings(request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    return await embeddings_handler(None, request, authenticated)
+
+@app.post("/cross/v1/embeddings")
+async def embeddings_cross(request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    body = await request.json()
+    model = body.get("model", "")
+    if not model.startswith("global."):
+        return await embeddings_handler(default_aws_region, request, authenticated, body)
+    region = _get_cross_region(body)
+    logger.info(f"Cross-region embedding routing to: {region}")
+    try:
+        return await embeddings_handler(region, request, authenticated, body)
+    except Exception as e:
+        logger.error(f"Cross-region embedding {region} failed: {e}, retrying with fallback")
+        _blacklist_region(region)
+        fallback = _get_cross_region(body)
+        logger.info(f"Cross-region embedding fallback to: {fallback}")
+        return await embeddings_handler(fallback, request, authenticated, body)
+
+@app.post("/{region}/v1/embeddings")
+async def embeddings_with_region(region: Optional[str], request: Request, authenticated: bool = Depends(verify_api_key_dual)):
+    return await embeddings_handler(region, request, authenticated)
+
+async def embeddings_handler(region: Optional[str], request: Request, authenticated: bool, body: dict = None):
+    try:
+        if body is None:
+            body = await request.json()
+        model = body.pop("model", None)
+        if not model:
+            return JSONResponse(status_code=400, content={"error": {"message": "No model specified", "type": "ValueError"}})
+        if not model.startswith("bedrock/"):
+            model = f"bedrock/{model}"
+        body["aws_region_name"] = region or body.get("aws_region_name", default_aws_region)
+        response = await litellm.aembedding(model=model, **body)
+        if hasattr(response, "model_dump"):
+            return response.model_dump()
+        return response.dict()
+    except Exception as e:
+        logger.error(f"Embedding failed: {e}")
+        return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": type(e).__name__}})
+
+
 @app.post("/v1/messages")
 async def messages(request: Request, authenticated: bool = Depends(verify_api_key_dual)):
     return await messages_with_region(None, request, authenticated)
