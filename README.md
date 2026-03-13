@@ -33,7 +33,7 @@ API Key is stored in AWS Secrets Manager — click the link in Outputs to retrie
 {
   "apiKeyHelper": "echo YOUR_API_KEY",
   "primaryProvider": {
-    "baseURL": "https://xxxxxxxxxx.us-west-2.awsapprunner.com/v1",
+    "baseURL": "https://xxxxxxxxxx.us-west-2.awsapprunner.com/cross/v1",
     "model": "claude-sonnet-4-6"
   }
 }
@@ -46,12 +46,14 @@ API Key is stored in AWS Secrets Manager — click the link in Outputs to retrie
 ```json
 {
   "apiKey": "YOUR_API_KEY",
-  "baseURL": "https://xxxxxxxxxx.us-west-2.awsapprunner.com/v1",
+  "baseURL": "https://xxxxxxxxxx.us-west-2.awsapprunner.com/cross/v1",
   "model": "claude-sonnet-4-6"
 }
 ```
 
 Replace `xxxxxxxxxx.us-west-2.awsapprunner.com` with your actual API Base URL from CloudFormation Outputs.
+
+The `/cross/v1` path enables cross-region load balancing — requests with `global.` model prefixes are automatically distributed across 14 AWS regions with hash-based sticky routing, automatic failover, and region blacklisting on errors. Use `/v1` instead if you prefer single-region mode.
 
 ## Supported Model Aliases
 
