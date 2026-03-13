@@ -4,7 +4,15 @@ OpenAI-compatible API proxy for Amazon Bedrock, deployed on AWS App Runner via C
 
 ## Deploy
 
-Deploy using the public Docker image, no build required:
+Deploy using the public Docker image, no build required.
+
+### Option 1: AWS Console
+
+1. Open [CloudFormation Console](https://console.aws.amazon.com/cloudformation/home#/stacks/create)
+2. Upload the [`02.cloudformation.yaml`](02.cloudformation.yaml) file from this repo
+3. Stack name: `litellm-proxy-bedrock`, then click through with defaults
+
+### Option 2: CLI
 
 ```bash
 aws cloudformation deploy \
