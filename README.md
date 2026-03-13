@@ -1,158 +1,110 @@
 # LiteLLM Proxy for Amazon Bedrock
 
-A FastAPI server that provides an OpenAI-compatible API interface for Amazon Bedrock using LiteLLM.
+OpenAI-compatible API proxy for Amazon Bedrock, deployed on AWS App Runner via CloudFormation.
 
-## Features
+## Deploy
 
-- OpenAI API compatibility
-- Support for Amazon Bedrock models
-- Streaming responses
-- API key authentication
-- Auto-scaling with AWS App Runner
-- CloudFormation deployment
+One-click deploy using the public Docker image, no build required:
 
-## Quick Start: One-Step Deployment
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home#/stacks/new?stackName=litellm-proxy-bedrock&templateURL=https://raw.githubusercontent.com/yytdfc/litellm_proxy_for_bedrock_apprunner/main/02.cloudformation.yaml)
 
-For the fastest deployment experience, use the all-in-one script:
+Or via CLI:
 
 ```bash
-# Run the all-in-one deployment script
-./deploy-all-in-one.sh
+aws cloudformation deploy \
+  --template-file 02.cloudformation.yaml \
+  --stack-name litellm-proxy-bedrock \
+  --capabilities CAPABILITY_IAM
 ```
 
-This script will:
-1. Set up environment variables
-2. Build and push a Docker image to ECR
-3. Deploy the application to AWS App Runner using CloudFormation
+After deployment, get your API Base URL and API Key from CloudFormation Outputs.
 
-For automated deployments, use the `-y` flag to skip confirmations:
-```bash
-./deploy-all-in-one.sh --yes
-```
+API Key is stored in AWS Secrets Manager — click the link in Outputs to retrieve it.
 
-To customize deployment settings, edit the `00.environment.sh` file before running the deployment script.
+## Configure Claude Code
 
-## Setup for Local Development
+`~/.claude/settings.json`:
 
-1. Clone this repository:
-   ```
-   git clone https://github.com/yytdfc/litellm_proxy_for_bedrock_apprunner.git
-   cd litellm_proxy_for_bedrock_apprunner
-   ```
-
-2. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
-
-3. Configure environment variables:
-   ```
-   cp .env.example .env
-   ```
-   Edit the `.env` file to add your AWS credentials and API key.
-
-4. Run locally:
-   ```
-   uvicorn app.main:app --reload
-   ```
-   The API will be available at http://localhost:8000
-
-5. Test the local deployment:
-   ```
-   cd client_examples
-   cp .env_example .env
-   # Edit .env with your local settings
-   python openai_sdk_example.py
-   ```
-
-## Deployment Options
-
-### Option 1: One-Step Deployment (Recommended)
-
-```bash
-./deploy-all-in-one.sh
-# Or for automated deployments:
-./deploy-all-in-one.sh --yes
-```
-
-### Option 2: Step-by-Step Deployment
-
-For more control over the deployment process:
-
-```bash
-# 1. Set up environment variables
-# Edit 00.environment.sh to customize deployment settings
-source ./00.environment.sh
-
-# 2. Build and push Docker image
-./01.build_and_push.sh
-
-# 3. Deploy with CloudFormation
-./02.deploy.sh
-```
-
-Each script supports the `--yes` flag for automated deployments.
-
-### Option 3: Manual Deployment via AWS Console
-
-1. Build and push a Docker image or use the public one: `public.ecr.aws/y0a9p9k0/apprunner/litellm-proxy-for-bedrock:latest`
-2. Deploy using the AWS CloudFormation console with the `02.cloudformation.yaml` template
-
-## Testing Your Deployment
-
-After deployment completes:
-
-1. Note the API endpoint URL and API key from the script output
-2. Configure the client:
-   ```bash
-   cd client_examples
-   cp .env_example .env
-   # Edit .env with your deployment values
-   ```
-3. Run the test client:
-   ```bash
-   python openai_sdk_example.py
-   # or
-   python openai_http_example.py
-   ```
-
-## API Usage
-
-### Authentication
-
-Include your API key in all requests:
-```
-Authorization: Bearer your_api_key
-```
-
-### List Available Models
-```
-GET /v1/models
-```
-
-### Chat Completions
-```
-POST /v1/chat/completions
-```
-
-Example request:
 ```json
 {
-  "model": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-  "messages": [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello, who are you?"}
-  ],
-  "temperature": 0.7,
-  "stream": false
+  "apiKeyHelper": "echo YOUR_API_KEY",
+  "primaryProvider": {
+    "baseURL": "https://xxxxxxxxxx.us-west-2.awsapprunner.com/v1",
+    "model": "claude-sonnet-4-6"
+  }
 }
 ```
 
-## Performance Tuning
+## Configure OpenClaw
 
-Configure these parameters in the CloudFormation template:
+`~/.openclaw/openclaw.json`:
 
-- **AppRunnerMaxConcurrency**: Concurrent requests per instance
-- **AppRunnerMaxSize**: Maximum number of instances for auto-scaling
+```json
+{
+  "apiKey": "YOUR_API_KEY",
+  "baseURL": "https://xxxxxxxxxx.us-west-2.awsapprunner.com/v1",
+  "model": "claude-sonnet-4-6"
+}
+```
 
-Adjust these values based on your expected traffic and performance requirements.
+Replace `xxxxxxxxxx.us-west-2.awsapprunner.com` with your actual API Base URL from CloudFormation Outputs.
+
+## Supported Model Aliases
+
+| Alias | Bedrock Model ID |
+|---|---|
+| `claude-sonnet-4-5` | `global.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+| `claude-haiku-4-5` | `global.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| `claude-opus-4-5` | `global.anthropic.claude-opus-4-5-20251101-v1:0` |
+| `claude-opus-4-6` | `global.anthropic.claude-opus-4-6-v1` |
+| `claude-sonnet-4-6` | `global.anthropic.claude-sonnet-4-6` |
+
+You can also use any Bedrock model ID directly (e.g. `us.anthropic.claude-3-7-sonnet-20250219-v1:0`).
+
+## CloudFormation Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `ECRImageURI` | `public.ecr.aws/.../latest` | Docker image URI |
+| `AWSRegion` | `us-west-2` | Bedrock region |
+| `AppRunnerCPU` | `1 vCPU` | CPU per instance |
+| `AppRunnerMemory` | `2 GB` | Memory per instance |
+| `AppRunnerMaxConcurrency` | `100` | Concurrent requests per instance |
+| `AppRunnerMaxSize` | `10` | Max auto-scaling instances |
+
+## API Usage
+
+```bash
+# List models
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  https://xxxxxxxxxx.us-west-2.awsapprunner.com/v1/models
+
+# Chat completions
+curl -X POST -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  https://xxxxxxxxxx.us-west-2.awsapprunner.com/v1/chat/completions \
+  -d '{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+## Build & Deploy from Source
+
+```bash
+./deploy-all-in-one.sh        # interactive
+./deploy-all-in-one.sh --yes  # non-interactive
+```
+
+Or step by step:
+
+```bash
+source ./00.environment.sh    # set env vars
+./01.build_and_push.sh        # build & push to ECR
+./02.deploy.sh                # deploy CloudFormation
+```
+
+## Local Development
+
+```bash
+pip install -r app/requirements.txt
+cp .env.example .env          # edit with your AWS credentials and API key
+uvicorn app.main:app --reload
+```
