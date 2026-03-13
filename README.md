@@ -27,27 +27,51 @@ API Key is stored in AWS Secrets Manager — click the link in Outputs to retrie
 
 ## Configure Claude Code
 
-`~/.claude/settings.json`:
+`~/.claude/settings.json` — add the `env` block:
 
 ```json
 {
-  "apiKeyHelper": "echo YOUR_API_KEY",
-  "primaryProvider": {
-    "baseURL": "https://xxxxxxxxxx.us-west-2.awsapprunner.com/cross/v1",
-    "model": "claude-sonnet-4-6"
-  }
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "YOUR_API_KEY",
+    "ANTHROPIC_BASE_URL": "https://xxxxxxxxxx.us-west-2.awsapprunner.com/cross/",
+    "ANTHROPIC_MODEL": "claude-sonnet-4-6"
+  },
+  "model": "claude-sonnet-4-6"
 }
 ```
 
 ## Configure OpenClaw
 
-`~/.openclaw/openclaw.json`:
+`~/.openclaw/openclaw.json` — add a `litellm` provider under `models.providers`:
 
 ```json
 {
-  "apiKey": "YOUR_API_KEY",
-  "baseURL": "https://xxxxxxxxxx.us-west-2.awsapprunner.com/cross/v1",
-  "model": "claude-sonnet-4-6"
+  "models": {
+    "providers": {
+      "litellm": {
+        "baseUrl": "https://xxxxxxxxxx.us-west-2.awsapprunner.com/cross/",
+        "apiKey": "YOUR_API_KEY",
+        "api": "anthropic-messages",
+        "models": [
+          {
+            "id": "claude-sonnet-4-6",
+            "name": "Sonnet 4.6",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "contextWindow": 1000000,
+            "maxTokens": 128000
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "litellm/claude-sonnet-4-6"
+      }
+    }
+  }
 }
 ```
 
