@@ -672,17 +672,36 @@ async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
                 if block.get("type") == "tool_use":
                     block.pop("caller", None)
     
-    # Auto-detect beta headers from payload
-    betas = set()
+    # Convert output_format -> output_config.format (Bedrock rejects output_format)
+    if "output_format" in body:
+        of = body.pop("output_format")
+        if "output_config" not in body:
+            schema = of.get("json_schema", {}).get("schema", of.get("schema", {}))
+            body["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+    
+    # Auto-inject eager_input_streaming on 4.6 tools for faster tool permission prompts
     tools = body.get("tools", [])
     is_46 = "opus-4-6" in model_id or "opus-4.6" in model_id or "sonnet-4-6" in model_id or "sonnet-4.6" in model_id
     if is_46:
+        for t in tools:
+            if "input_schema" in t and "eager_input_streaming" not in t:
+                t["eager_input_streaming"] = True
+    
+    # Text editor tool: Bedrock requires name='str_replace_based_edit_tool'
+    for t in tools:
+        if t.get("type", "").startswith("text_editor_") and t.get("name") == "text_editor":
+            t["name"] = "str_replace_based_edit_tool"
+    
+    # Auto-detect beta headers from payload
+    betas = set()
+    if is_46:
         betas.add("context-1m-2025-08-07")
-    if any(t.get("type", "").startswith("tool_search") for t in tools):
+    tool_types = {t.get("type", "") for t in tools}
+    if any(tt.startswith("tool_search") for tt in tool_types):
         betas.add("tool-search-tool-2025-10-19")
     if any("input_examples" in t for t in tools):
         betas.add("tool-examples-2025-10-29")
-    if any(t.get("type", "").startswith("computer_") for t in tools):
+    if any(tt.startswith(("computer_", "bash_", "text_editor_")) for tt in tool_types):
         betas.add("computer-use-2025-01-24")
     
     # Use beta API when context_management is present
