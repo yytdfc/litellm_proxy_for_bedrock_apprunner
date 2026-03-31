@@ -161,7 +161,11 @@ _anthropic_clients: dict[str, AsyncAnthropicBedrock] = {}
 
 def get_anthropic_client(aws_region: str) -> AsyncAnthropicBedrock:
     if aws_region not in _anthropic_clients:
-        _anthropic_clients[aws_region] = AsyncAnthropicBedrock(aws_region=aws_region)
+        _anthropic_clients[aws_region] = AsyncAnthropicBedrock(
+            aws_region=aws_region,
+            timeout=3600.0,
+            max_retries=0,
+        )
     return _anthropic_clients[aws_region]
 
 
@@ -658,29 +662,48 @@ async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
     
     remove_cache_control_ttl(body)
     
-    # Strip known non-API fields that SDK doesn't accept
+    # Strip fields not accepted by Bedrock InvokeModel
     for key in ["callOptions", "output_config", "headers"]:
         body.pop(key, None)
+    for msg in body.get("messages", []):
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if block.get("type") == "tool_use":
+                    block.pop("caller", None)
     
-    # Add beta headers for opus-4.5, sonnet-4.6, opus-4.6
-    extra_headers = {}
+    # Auto-detect beta headers from payload
+    betas = set()
+    tools = body.get("tools", [])
     is_46 = "opus-4-6" in model_id or "opus-4.6" in model_id or "sonnet-4-6" in model_id or "sonnet-4.6" in model_id
-    is_opus_45 = "opus-4-5" in model_id or "opus-4.5" in model_id
-    if is_46 or is_opus_45:
-        betas = ["tool-search-tool-2025-10-19"]
-        if is_46:
-            betas.append("context-1m-2025-08-07")
+    if is_46:
+        betas.add("context-1m-2025-08-07")
+    if any(t.get("type", "").startswith("tool_search") for t in tools):
+        betas.add("tool-search-tool-2025-10-19")
+    if any("input_examples" in t for t in tools):
+        betas.add("tool-examples-2025-10-29")
+    if any(t.get("type", "").startswith("computer_") for t in tools):
+        betas.add("computer-use-2025-01-24")
+    
+    # Use beta API when context_management is present
+    use_beta = "context_management" in body
+    if use_beta:
+        betas.add("context-management-2025-06-27")
+    
+    extra_headers = {}
+    if betas:
         extra_headers["anthropic-beta"] = ",".join(betas)
     
     client = get_anthropic_client(aws_region)
+    api = client.beta.messages if use_beta else client.messages
     start_time = time.time()
 
-    logger.info(f"[{request_id}] claude_native model={model_id} region={aws_region} stream={is_stream}")
+    logger.info(f"[{request_id}] claude_native model={model_id} region={aws_region} stream={is_stream} beta={use_beta}")
 
     if is_stream:
         async def generate_stream():
             try:
-                stream = await client.messages.create(stream=True, extra_headers=extra_headers, **body)
+                stream = await api.create(stream=True, extra_headers=extra_headers, **body)
                 async for event in stream:
                     yield f"event: {event.type}\ndata: {json.dumps(event.model_dump() if hasattr(event, 'model_dump') else event.dict())}\n\n"
                 
@@ -694,7 +717,7 @@ async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
         return StreamingResponse(generate_stream(), media_type="text/event-stream")
     else:
         try:
-            response = await client.messages.create(**body, extra_headers=extra_headers, timeout=1200)
+            response = await api.create(**body, extra_headers=extra_headers)
             process_time = time.time() - start_time
             logger.info(f"[{request_id}] Successfully completed Claude native request in {process_time:.3f}s")
             return response.model_dump() if hasattr(response, 'model_dump') else response.dict()
