@@ -718,31 +718,37 @@ async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
     api = client.beta.messages if use_beta else client.messages
     start_time = time.time()
 
-    logger.info(f"[{request_id}] claude_native model={model_id} region={aws_region} stream={is_stream} beta={use_beta}")
+    logger.info(f"[{request_id}] → request model={model_id} region={aws_region} stream={is_stream} betas={','.join(betas) if betas else 'none'}")
 
     if is_stream:
         async def generate_stream():
             try:
+                logger.info(f"[{request_id}] → sending to bedrock (stream)")
+                first_event = True
+                event_count = 0
                 stream = await api.create(stream=True, extra_headers=extra_headers, **body)
                 async for event in stream:
+                    if first_event:
+                        logger.info(f"[{request_id}] ← first event received ({time.time() - start_time:.3f}s)")
+                        first_event = False
+                    event_count += 1
                     yield f"event: {event.type}\ndata: {json.dumps(event.model_dump() if hasattr(event, 'model_dump') else event.dict())}\n\n"
                 
-                process_time = time.time() - start_time
-                logger.info(f"[{request_id}] Successfully streamed Claude native response in {process_time:.3f}s")
+                logger.info(f"[{request_id}] ✓ stream complete events={event_count} time={time.time() - start_time:.3f}s")
             except Exception as e:
-                logger.error(f"Claude native streaming failed: {str(e)}")
+                logger.error(f"[{request_id}] ✗ stream failed ({time.time() - start_time:.3f}s): {str(e)}")
                 error_data = {"type": "error", "error": {"message": str(e), "type": type(e).__name__}}
                 yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
         
         return StreamingResponse(generate_stream(), media_type="text/event-stream")
     else:
         try:
+            logger.info(f"[{request_id}] → sending to bedrock (non-stream)")
             response = await api.create(**body, extra_headers=extra_headers)
-            process_time = time.time() - start_time
-            logger.info(f"[{request_id}] Successfully completed Claude native request in {process_time:.3f}s")
+            logger.info(f"[{request_id}] ✓ complete time={time.time() - start_time:.3f}s")
             return response.model_dump() if hasattr(response, 'model_dump') else response.dict()
         except Exception as e:
-            logger.error(f"Claude native request failed: {str(e)}")
+            logger.error(f"[{request_id}] ✗ failed ({time.time() - start_time:.3f}s): {str(e)}")
             return JSONResponse(
                 status_code=500,
                 content={"error": {"message": str(e), "type": type(e).__name__}}
