@@ -1,6 +1,6 @@
 # LiteLLM Proxy for Amazon Bedrock
 
-OpenAI-compatible API proxy for Amazon Bedrock, deployed on AWS App Runner via CloudFormation.
+OpenAI-compatible API proxy for Amazon Bedrock, deployed on Amazon ECS Express Mode via CloudFormation.
 
 ## Deploy
 
@@ -9,14 +9,14 @@ Deploy using the public Docker image, no build required.
 ### Option 1: AWS Console
 
 1. Open [CloudFormation Console](https://console.aws.amazon.com/cloudformation/home#/stacks/create)
-2. Upload the [`02.cloudformation.yaml`](02.cloudformation.yaml) file from this repo
+2. Upload the [`03.cloudformation-ecs-express.yaml`](03.cloudformation-ecs-express.yaml) file from this repo
 3. Stack name: `litellm-proxy-bedrock`, then click through with defaults
 
 ### Option 2: CLI
 
 ```bash
 aws cloudformation deploy \
-  --template-file 02.cloudformation.yaml \
+  --template-file 03.cloudformation-ecs-express.yaml \
   --stack-name litellm-proxy-bedrock \
   --capabilities CAPABILITY_IAM
 ```
@@ -97,10 +97,9 @@ You can also use any Bedrock model ID directly (e.g. `us.anthropic.claude-3-7-so
 |---|---|---|
 | `ECRImageURI` | `public.ecr.aws/.../latest` | Docker image URI |
 | `AWSRegion` | `us-west-2` | Bedrock region |
-| `AppRunnerCPU` | `1 vCPU` | CPU per instance |
-| `AppRunnerMemory` | `2 GB` | Memory per instance |
-| `AppRunnerMaxConcurrency` | `100` | Concurrent requests per instance |
-| `AppRunnerMaxSize` | `10` | Max auto-scaling instances |
+| `Cpu` | `1024` | CPU units per task (256/512/1024/2048/4096) |
+| `Memory` | `2048` | Memory MB per task (512/1024/2048/4096/8192) |
+| `MaxTaskCount` | `10` | Max auto-scaling tasks |
 
 ## API Usage
 

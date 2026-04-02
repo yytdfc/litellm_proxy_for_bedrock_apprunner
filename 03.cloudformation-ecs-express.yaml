@@ -1,0 +1,130 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'LiteLLM Proxy for Amazon Bedrock on ECS Express Mode'
+
+Parameters:
+  ECRImageURI:
+    Type: String
+    Description: Docker image URI
+    Default: public.ecr.aws/y0a9p9k0/apprunner/litellm-proxy-for-bedrock:latest
+
+  AWSRegion:
+    Type: String
+    Description: AWS Region for Bedrock
+    Default: us-west-2
+
+  Cpu:
+    Type: String
+    Description: CPU for each task
+    Default: '1024'
+    AllowedValues: ['256', '512', '1024', '2048', '4096']
+
+  Memory:
+    Type: String
+    Description: Memory for each task
+    Default: '2048'
+    AllowedValues: ['512', '1024', '2048', '4096', '8192']
+
+  MaxTaskCount:
+    Type: Number
+    Description: Maximum number of tasks for auto-scaling
+    Default: 10
+    MinValue: 1
+    MaxValue: 128
+
+Resources:
+  APIKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}-api-key"
+      Description: "API Key for LiteLLM Proxy"
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: "apiKey"
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:ListFoundationModels
+                  - bedrock:ListInferenceProfiles
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref APIKeySecret
+
+  InfrastructureRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSInfrastructureRolePolicyForExpressGateway
+
+  ExpressService:
+    Type: AWS::ECS::ExpressGatewayService
+    Properties:
+      ServiceName: !Sub "${AWS::StackName}"
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      InfrastructureRoleArn: !GetAtt InfrastructureRole.Arn
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      HealthCheckPath: /health
+      PrimaryContainer:
+        Image: !Ref ECRImageURI
+        ContainerPort: 8080
+        Environment:
+          - Name: AWS_REGION
+            Value: !Ref AWSRegion
+          - Name: API_KEY
+            Value: !Join ['', ['{{resolve:secretsmanager:', !Ref APIKeySecret, ':SecretString:apiKey}}']]
+      ScalingTarget:
+        MinTaskCount: 1
+        MaxTaskCount: !Ref MaxTaskCount
+        AutoScalingMetric: AVERAGE_CPU
+        AutoScalingTargetValue: 60
+
+Outputs:
+  APIKey:
+    Description: API Key (retrieve from Secrets Manager)
+    Value: !Sub "https://console.aws.amazon.com/secretsmanager/home?region=${AWS::Region}#/secret?name=${APIKeySecret}"
+
+  APIBaseURL:
+    Description: API Base URL
+    Value: !Sub "https://${ExpressService.Endpoint}/v1"
