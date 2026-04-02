@@ -696,6 +696,7 @@ async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
     betas = set()
     if is_46:
         betas.add("context-1m-2025-08-07")
+        betas.add("fine-grained-tool-streaming-2025-05-14")
     tool_types = {t.get("type", "") for t in tools}
     if any(tt.startswith("tool_search") for tt in tool_types):
         betas.add("tool-search-tool-2025-10-19")
