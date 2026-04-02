@@ -729,10 +729,13 @@ async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
                 stream = await api.create(stream=True, extra_headers=extra_headers, **body)
                 async for event in stream:
                     if first_event:
-                        logger.info(f"[{request_id}] ← first event received ({time.time() - start_time:.3f}s)")
+                        logger.info(f"[{request_id}] ← first event ({time.time() - start_time:.3f}s)")
                         first_event = False
                     event_count += 1
-                    yield f"event: {event.type}\ndata: {json.dumps(event.model_dump() if hasattr(event, 'model_dump') else event.dict())}\n\n"
+                    etype = event.type
+                    if etype in ("message_start", "content_block_start", "content_block_stop", "message_delta"):
+                        logger.info(f"[{request_id}] .. {etype} #{event_count} ({time.time() - start_time:.3f}s)")
+                    yield f"event: {etype}\ndata: {json.dumps(event.model_dump() if hasattr(event, 'model_dump') else event.dict())}\n\n"
                 
                 logger.info(f"[{request_id}] ✓ stream complete events={event_count} time={time.time() - start_time:.3f}s")
             except Exception as e:
