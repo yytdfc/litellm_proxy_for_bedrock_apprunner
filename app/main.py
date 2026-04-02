@@ -642,16 +642,16 @@ async def messages_handler(region: Optional[str], enable_cache: bool, request: R
         )
 
 
-def remove_cache_control_ttl(obj):
-    """Recursively remove ttl from cache_control in nested structures"""
+def remove_cache_control_extras(obj):
+    """Recursively strip cache_control to only keep type (Bedrock rejects extra fields like ttl, scope)"""
     if isinstance(obj, dict):
         if "cache_control" in obj and isinstance(obj["cache_control"], dict):
-            obj["cache_control"].pop("ttl", None)
+            obj["cache_control"] = {"type": obj["cache_control"].get("type", "ephemeral")}
         for value in obj.values():
-            remove_cache_control_ttl(value)
+            remove_cache_control_extras(value)
     elif isinstance(obj, list):
         for item in obj:
-            remove_cache_control_ttl(item)
+            remove_cache_control_extras(item)
 
 
 async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
@@ -660,7 +660,7 @@ async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
 
     is_stream = body.pop("stream", False)
     
-    remove_cache_control_ttl(body)
+    remove_cache_control_extras(body)
     
     # Strip fields not accepted by Bedrock InvokeModel
     for key in ["callOptions", "output_config", "headers"]:
