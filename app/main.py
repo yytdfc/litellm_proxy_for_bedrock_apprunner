@@ -643,10 +643,10 @@ async def messages_handler(region: Optional[str], enable_cache: bool, request: R
 
 
 def remove_cache_control_extras(obj):
-    """Recursively strip cache_control to only keep type (Bedrock rejects extra fields like ttl, scope)"""
+    """Recursively strip unsupported fields from cache_control (Bedrock rejects scope)"""
     if isinstance(obj, dict):
         if "cache_control" in obj and isinstance(obj["cache_control"], dict):
-            obj["cache_control"] = {"type": obj["cache_control"].get("type", "ephemeral")}
+            obj["cache_control"].pop("scope", None)
         for value in obj.values():
             remove_cache_control_extras(value)
     elif isinstance(obj, list):
