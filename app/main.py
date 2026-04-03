@@ -718,7 +718,7 @@ async def _handle_claude_native(model_id: str, aws_region: str, body: dict):
     api = client.beta.messages if use_beta else client.messages
     start_time = time.time()
 
-    logger.info(f"[{request_id}] → request model={model_id} region={aws_region} stream={is_stream} betas={','.join(betas) if betas else 'none'}")
+    logger.info(f"[{request_id}] → request model={model_id} region={aws_region} stream={is_stream} betas={','.join(betas) if betas else 'none'} tools={[t.get('type') or t.get('name') for t in tools] if tools else 'none'}")
 
     if is_stream:
         async def generate_stream():
